@@ -1,5 +1,5 @@
 """
-screenwall_generator_ezdxf.py
+screenwall_generator.py
 -----------------------------
 
 Drop-in replacement for the original screenwall generator that uses the
