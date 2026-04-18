@@ -107,7 +107,7 @@ def generate_outputs(panels: list[PanelSpec], stock_width: float, stock_height: 
         if nest:
             sheets = nest_panels(panels, stock_width, stock_height)
             panel_dict = {p.panel_id: p for p in panels}
-            write_nesting_dxf(sheets, output_dir)
+            write_nesting_dxf(sheets)
             messages.append(f"Generated nesting layout across {len(sheets)} stock sheet(s).")
 
         zip_buffer = io.BytesIO()
