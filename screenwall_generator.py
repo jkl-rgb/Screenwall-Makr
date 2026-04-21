@@ -43,11 +43,7 @@ def _to_float(value, default=None):
 
 def _thickness_to_float(value: str) -> float:
     raw = str(value).strip()
-    gauges = {
-        "16 ga": 0.0625,
-        "14 ga": 0.0800,
-        "11 ga": 0.1250,
-    }
+    gauges = {"16 ga": 0.0625, "14 ga": 0.0800, "11 ga": 0.1250}
     key = raw.lower()
     if key in gauges:
         return gauges[key]
@@ -58,10 +54,8 @@ def parse_csv(path):
     out = []
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
-
         if reader.fieldnames is None:
             raise ValueError("CSV is missing a header row.")
-
         reader.fieldnames = [str(h).strip().lower() for h in reader.fieldnames]
 
         for i, row in enumerate(reader, start=2):
@@ -100,7 +94,7 @@ def parse_csv(path):
     return out
 
 
-def bend_deduction(thickness, radius, k_factor):
+def bend_deduction(thickness: float, radius: float, k_factor: float) -> float:
     bend_allowance = (math.pi / 2.0) * (radius + k_factor * thickness)
     setback = radius + thickness
     return 2.0 * setback - bend_allowance
@@ -111,7 +105,6 @@ def get_rules(spec: PanelSpec):
     if base is None:
         nearest = min(MATERIAL_RULES.keys(), key=lambda t: abs(t - spec.thickness))
         base = MATERIAL_RULES[nearest]
-
     return (
         spec.k_factor_override if spec.k_factor_override is not None else base["k"],
         spec.bend_radius_override if spec.bend_radius_override is not None else base["r"],
@@ -119,21 +112,47 @@ def get_rules(spec: PanelSpec):
     )
 
 
+def _flange_flat(depth: float, bd: float) -> float:
+    return max(depth - bd, 0.0)
+
+
 def flat_size(spec: PanelSpec):
     k, r, _gap = get_rules(spec)
     bd = bend_deduction(spec.thickness, r, k)
-    f1 = spec.flange1_depth
-    f2 = spec.flange2_depth or 0.0
+    f1 = _flange_flat(spec.flange1_depth, bd)
+    f2 = _flange_flat(spec.flange2_depth or 0.0, bd)
 
     if spec.flange_type == "L":
         return (
-            spec.face_width + 2.0 * f1 - 2.0 * bd,
-            spec.face_height + 2.0 * f1 - 2.0 * bd,
+            spec.face_width + 2.0 * f1,
+            spec.face_height + 2.0 * f1,
         )
 
     return (
-        spec.face_width + 2.0 * (f1 + f2) - 4.0 * bd,
-        spec.face_height + 2.0 * (f1 + f2) - 4.0 * bd,
+        spec.face_width + 2.0 * (f1 + f2),
+        spec.face_height + 2.0 * (f1 + f2),
+    )
+
+
+def _octagon_points(w: float, h: float, inset: float):
+    inset = max(0.0, min(inset, w / 2.0, h / 2.0))
+    return [
+        (inset, 0.0),
+        (w - inset, 0.0),
+        (w, inset),
+        (w, h - inset),
+        (w - inset, h),
+        (inset, h),
+        (0.0, h - inset),
+        (0.0, inset),
+    ]
+
+
+def _add_rect(msp, x0, y0, x1, y1, layer: str):
+    msp.add_lwpolyline(
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+        close=True,
+        dxfattribs={"layer": layer},
     )
 
 
@@ -172,23 +191,50 @@ def _hole_centers(face_x, face_y, face_w, face_h, hole_dia, pitch, pattern):
 
 def generate_panel_dxf(spec: PanelSpec, outdir: str):
     w, h = flat_size(spec)
+    k, r, gap = get_rules(spec)
+    bd = bend_deduction(spec.thickness, r, k)
+    f1 = _flange_flat(spec.flange1_depth, bd)
+    f2 = _flange_flat(spec.flange2_depth or 0.0, bd)
 
     doc = ezdxf.new(dxfversion="R2010")
     doc.units = 1
     msp = doc.modelspace()
 
-    for name, color in [("cut", 1), ("holes", 2)]:
+    for name, color in [("cut", 1), ("holes", 2), ("bend", 3), ("bend_extent", 4)]:
         if name not in doc.layers:
             doc.layers.add(name=name, color=color)
 
-    msp.add_lwpolyline(
-        [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)],
-        close=True,
-        dxfattribs={"layer": "cut"},
-    )
+    if spec.flange_type == "L":
+        cut_pts = _octagon_points(w, h, f1)
+    else:
+        cut_pts = _octagon_points(w, h, f2)
+
+    msp.add_lwpolyline(cut_pts, close=True, dxfattribs={"layer": "cut"})
 
     face_x = (w - spec.face_width) / 2.0
     face_y = (h - spec.face_height) / 2.0
+    _add_rect(msp, face_x, face_y, face_x + spec.face_width, face_y + spec.face_height, "bend")
+
+    if gap > 0:
+        gx0 = face_x + gap
+        gy0 = face_y + gap
+        gx1 = face_x + spec.face_width - gap
+        gy1 = face_y + spec.face_height - gap
+        if gx1 > gx0 and gy1 > gy0:
+            _add_rect(msp, gx0, gy0, gx1, gy1, "bend_extent")
+
+    if spec.flange_type == "J" and f2 > 0:
+        outer_x = f2
+        outer_y = f2
+        _add_rect(msp, outer_x, outer_y, w - outer_x, h - outer_y, "bend")
+
+        if gap > 0:
+            jx0 = outer_x + gap
+            jy0 = outer_y + gap
+            jx1 = w - outer_x - gap
+            jy1 = h - outer_y - gap
+            if jx1 > jx0 and jy1 > jy0:
+                _add_rect(msp, jx0, jy0, jx1, jy1, "bend_extent")
 
     for x, y in _hole_centers(
         face_x, face_y, spec.face_width, spec.face_height, spec.hole_dia, spec.pitch, spec.pattern
