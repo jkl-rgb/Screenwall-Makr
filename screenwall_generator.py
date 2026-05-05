@@ -195,6 +195,55 @@ def _hole_centers(face_x, face_y, face_w, face_h, hole_dia, pitch, pattern, stag
     return centers
 
 
+def _select_fastening_holes(edge_centers, pitch):
+    if not edge_centers:
+        return []
+    step = max(1, int(round(12.0 / pitch)))
+    return [edge_centers[i] for i in range(0, len(edge_centers), step)]
+
+
+def _add_slot(msp, cx, cy, length, width, orientation, layer: str):
+    if orientation == "vertical":
+        dx = width / 2.0
+        dy = length / 2.0
+    else:
+        dx = length / 2.0
+        dy = width / 2.0
+    _add_rect(msp, cx - dx, cy - dy, cx + dx, cy + dy, layer)
+
+
+def _fastening_slots(spec: PanelSpec, face_x: float, face_y: float, face_w: float, face_h: float, f1: float, f2: float):
+    if spec.fastening_pair.strip().lower() in {"", "none"}:
+        return []
+
+    face_hole_centers = _hole_centers(
+        face_x,
+        face_y,
+        face_w,
+        face_h,
+        spec.hole_dia,
+        spec.pitch,
+        spec.pattern,
+        spec.stagger_angle,
+        spec.margin,
+    )
+    radius = spec.hole_dia / 2.0
+    tolerance = max(0.01, spec.pitch * 0.25)
+
+    if spec.flange_type == "L":
+        edge_x = face_x + face_w - spec.margin - radius
+        edge_centers = [c for c in face_hole_centers if abs(c[0] - edge_x) <= tolerance]
+        edge_centers.sort(key=lambda c: c[1])
+        slot_centers = _select_fastening_holes(edge_centers, spec.pitch)
+        return [("vertical", (face_x + face_w + f1 / 2.0, y)) for _, y in slot_centers]
+
+    edge_y = face_y + face_h - spec.margin - radius
+    edge_centers = [c for c in face_hole_centers if abs(c[1] - edge_y) <= tolerance]
+    edge_centers.sort(key=lambda c: c[0])
+    slot_centers = _select_fastening_holes(edge_centers, spec.pitch)
+    return [("horizontal", (x, face_y + face_h + f2 / 2.0)) for x, _ in slot_centers]
+
+
 def generate_panel_dxf(spec: PanelSpec, outdir: str):
     w, h = flat_size(spec)
     k, r, gap = get_rules(spec)
@@ -206,7 +255,7 @@ def generate_panel_dxf(spec: PanelSpec, outdir: str):
     doc.units = 1
     msp = doc.modelspace()
 
-    for name, color in [("cut", 1), ("holes", 2), ("bend", 3), ("bend_extent", 4)]:
+    for name, color in [("cut", 1), ("holes", 2), ("fastening", 5), ("bend", 3), ("bend_extent", 4)]:
         if name not in doc.layers:
             doc.layers.add(name=name, color=color)
 
@@ -246,6 +295,9 @@ def generate_panel_dxf(spec: PanelSpec, outdir: str):
         face_x, face_y, spec.face_width, spec.face_height, spec.hole_dia, spec.pitch, spec.pattern, spec.stagger_angle, spec.margin
     ):
         msp.add_circle((x, y), spec.hole_dia / 2.0, dxfattribs={"layer": "holes"})
+
+    for orientation, (cx, cy) in _fastening_slots(spec, face_x, face_y, spec.face_width, spec.face_height, f1, f2):
+        _add_slot(msp, cx, cy, 0.75, 0.25, orientation, "fastening")
 
     os.makedirs(outdir, exist_ok=True)
     doc.saveas(os.path.join(outdir, f"{spec.panel_id}.dxf"))

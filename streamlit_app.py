@@ -46,10 +46,10 @@ template_rows = [
         "1.0",
         "0.125",
         "1.0",
-        "staggere",
+        "staggered",
+        "standard",
+        "60.0",
         "1.25",
-        "round",
-        "none",
     ]
 ]
 
