@@ -31,6 +31,9 @@ template_headers = [
     "hole_pitch",
     "pattern",
     "fastening_pair",
+    "corner_relief_size",
+    "relief_width",
+    "relief_depth",
     "stagger_angle",
     "margin",
 ]
@@ -48,6 +51,9 @@ template_rows = [
         "1.0",
         "staggered",
         "standard",
+        "0.16",
+        "0.04",
+        "0.04",
         "60.0",
         "1.25",
     ]

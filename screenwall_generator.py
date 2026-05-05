@@ -10,10 +10,38 @@ import ezdxf
 
 
 MATERIAL_RULES = {
-    0.0625: {"k": 0.38, "r": 0.0625, "gap": 0.0528},
-    0.0800: {"k": 0.50, "r": 0.0800, "gap": 0.0528},
-    0.1250: {"k": 0.42, "r": 0.1875, "gap": 0.0528},
-    0.1875: {"k": 0.44, "r": 0.3750, "gap": 0.0528},
+    0.0625: {
+        "k": 0.38,
+        "r": 0.0625,
+        "gap": 0.0528,
+        "relief_width": 0.04,
+        "relief_depth": 0.04,
+        "corner_relief_size": 0.16,
+    },
+    0.0800: {
+        "k": 0.50,
+        "r": 0.0800,
+        "gap": 0.0528,
+        "relief_width": 0.04,
+        "relief_depth": 0.04,
+        "corner_relief_size": 0.16,
+    },
+    0.1250: {
+        "k": 0.42,
+        "r": 0.1875,
+        "gap": 0.0528,
+        "relief_width": 0.04,
+        "relief_depth": 0.04,
+        "corner_relief_size": 0.20,
+    },
+    0.1875: {
+        "k": 0.44,
+        "r": 0.3750,
+        "gap": 0.0528,
+        "relief_width": 0.04,
+        "relief_depth": 0.04,
+        "corner_relief_size": 0.24,
+    },
 }
 
 
@@ -33,6 +61,9 @@ class PanelSpec:
     k_factor_override: Optional[float] = None
     bend_radius_override: Optional[float] = None
     gap_override: Optional[float] = None
+    corner_relief_size: float = 0.16
+    relief_width: float = 0.04
+    relief_depth: float = 0.04
     stagger_angle: float = 60.0
     margin: float = 1.25
 
@@ -91,6 +122,9 @@ def parse_csv(path):
                     k_factor_override=_to_float(row.get("k_factor_override")),
                     bend_radius_override=_to_float(row.get("bend_radius_override")),
                     gap_override=_to_float(row.get("gap_override")),
+                    corner_relief_size=_to_float(row.get("corner_relief_size"), 0.16),
+                    relief_width=_to_float(row.get("relief_width"), 0.04),
+                    relief_depth=_to_float(row.get("relief_depth"), 0.04),
                     stagger_angle=_to_float(row.get("stagger_angle"), 60.0),
                     margin=_to_float(row.get("margin"), 1.25),
                 )
@@ -109,11 +143,14 @@ def get_rules(spec: PanelSpec):
     if base is None:
         nearest = min(MATERIAL_RULES.keys(), key=lambda t: abs(t - spec.thickness))
         base = MATERIAL_RULES[nearest]
-    return (
-        spec.k_factor_override if spec.k_factor_override is not None else base["k"],
-        spec.bend_radius_override if spec.bend_radius_override is not None else base["r"],
-        spec.gap_override if spec.gap_override is not None else base["gap"],
-    )
+    return {
+        "k": spec.k_factor_override if spec.k_factor_override is not None else base["k"],
+        "r": spec.bend_radius_override if spec.bend_radius_override is not None else base["r"],
+        "gap": spec.gap_override if spec.gap_override is not None else base["gap"],
+        "corner_relief_size": spec.corner_relief_size if spec.corner_relief_size is not None else base["corner_relief_size"],
+        "relief_width": spec.relief_width if spec.relief_width is not None else base["relief_width"],
+        "relief_depth": spec.relief_depth if spec.relief_depth is not None else base["relief_depth"],
+    }
 
 
 def _flange_flat(depth: float, bd: float) -> float:
@@ -121,7 +158,9 @@ def _flange_flat(depth: float, bd: float) -> float:
 
 
 def flat_size(spec: PanelSpec):
-    k, r, _gap = get_rules(spec)
+    rules = get_rules(spec)
+    k = rules["k"]
+    r = rules["r"]
     bd = bend_deduction(spec.thickness, r, k)
     f1 = _flange_flat(spec.flange1_depth, bd)
     f2 = _flange_flat(spec.flange2_depth or 0.0, bd)
@@ -246,7 +285,10 @@ def _fastening_slots(spec: PanelSpec, face_x: float, face_y: float, face_w: floa
 
 def generate_panel_dxf(spec: PanelSpec, outdir: str):
     w, h = flat_size(spec)
-    k, r, gap = get_rules(spec)
+    rules = get_rules(spec)
+    k = rules["k"]
+    r = rules["r"]
+    gap = rules["gap"]
     bd = bend_deduction(spec.thickness, r, k)
     f1 = _flange_flat(spec.flange1_depth, bd)
     f2 = _flange_flat(spec.flange2_depth or 0.0, bd)
@@ -255,6 +297,7 @@ def generate_panel_dxf(spec: PanelSpec, outdir: str):
     doc.units = 1
     msp = doc.modelspace()
 
+    rules = get_rules(spec)
     for name, color in [("cut", 1), ("holes", 2), ("fastening", 5), ("bend", 3), ("bend_extent", 4)]:
         if name not in doc.layers:
             doc.layers.add(name=name, color=color)
