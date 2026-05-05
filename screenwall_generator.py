@@ -177,25 +177,48 @@ def flat_size(spec: PanelSpec):
     )
 
 
-def _blank_outline(w: float, h: float, relief: float):
-    relief = max(0.0, min(relief, w / 2.0, h / 2.0))
-    if relief <= 1e-9:
-        return [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]
-
-    return [
-        (relief, 0.0),
-        (w - relief, 0.0),
-        (w, 0.0),
-        (w, relief),
-        (w, h - relief),
-        (w, h),
-        (w - relief, h),
-        (relief, h),
-        (0.0, h),
-        (0.0, h - relief),
-        (0.0, relief),
-        (0.0, 0.0),
-    ]
+def _blank_outline(w: float, h: float, spec: PanelSpec, f1: float, f2: float):
+    """
+    Generate the flat blank outline with L-shaped corner reliefs for L or J flanges.
+    
+    For L flanges: L-shaped corner notches at all 4 corners, each notch is f1 x f1
+    For J flanges: L-shaped corner notches at all 4 corners, each notch is f2 x f2
+    
+    The L-shaped relief allows both flanges to fold without interference at corners.
+    """
+    if spec.flange_type == "L":
+        notch = f1
+        return [
+            (-notch, h - notch),
+            (-notch, notch),
+            (0.0, notch),
+            (0.0, 0.0),
+            (w, 0.0),
+            (w, notch),
+            (w + notch, notch),
+            (w + notch, h - notch),
+            (w, h - notch),
+            (w, h + notch),
+            (0.0, h + notch),
+            (0.0, h - notch),
+        ]
+    else:
+        # J: corner notches at all 4 corners, each notch is f2 x f2
+        notch = f2
+        return [
+            (-notch, h - notch),
+            (-notch, notch),
+            (0.0, notch),
+            (0.0, 0.0),
+            (w, 0.0),
+            (w, notch),
+            (w + notch, notch),
+            (w + notch, h - notch),
+            (w, h - notch),
+            (w, h + notch),
+            (0.0, h + notch),
+            (0.0, h - notch),
+        ]
 
 
 def _add_rect(msp, x0, y0, x1, y1, layer: str):
@@ -308,7 +331,7 @@ def generate_panel_dxf(spec: PanelSpec, outdir: str):
         if name not in doc.layers:
             doc.layers.add(name=name, color=color)
 
-    cut_pts = _blank_outline(w, h, rules["corner_relief_size"])
+    cut_pts = _blank_outline(w, h, spec, f1, f2)
     msp.add_lwpolyline(cut_pts, close=True, dxfattribs={"layer": "cut"})
 
     face_x = (w - spec.face_width) / 2.0
