@@ -177,17 +177,24 @@ def flat_size(spec: PanelSpec):
     )
 
 
-def _octagon_points(w: float, h: float, inset: float):
-    inset = max(0.0, min(inset, w / 2.0, h / 2.0))
+def _blank_outline(w: float, h: float, relief: float):
+    relief = max(0.0, min(relief, w / 2.0, h / 2.0))
+    if relief <= 1e-9:
+        return [(0.0, 0.0), (w, 0.0), (w, h), (0.0, h)]
+
     return [
-        (inset, 0.0),
-        (w - inset, 0.0),
-        (w, inset),
-        (w, h - inset),
-        (w - inset, h),
-        (inset, h),
-        (0.0, h - inset),
-        (0.0, inset),
+        (relief, 0.0),
+        (w - relief, 0.0),
+        (w, 0.0),
+        (w, relief),
+        (w, h - relief),
+        (w, h),
+        (w - relief, h),
+        (relief, h),
+        (0.0, h),
+        (0.0, h - relief),
+        (0.0, relief),
+        (0.0, 0.0),
     ]
 
 
@@ -297,16 +304,11 @@ def generate_panel_dxf(spec: PanelSpec, outdir: str):
     doc.units = 1
     msp = doc.modelspace()
 
-    rules = get_rules(spec)
     for name, color in [("cut", 1), ("holes", 2), ("fastening", 5), ("bend", 3), ("bend_extent", 4)]:
         if name not in doc.layers:
             doc.layers.add(name=name, color=color)
 
-    if spec.flange_type == "L":
-        cut_pts = _octagon_points(w, h, f1)
-    else:
-        cut_pts = _octagon_points(w, h, f2)
-
+    cut_pts = _blank_outline(w, h, rules["corner_relief_size"])
     msp.add_lwpolyline(cut_pts, close=True, dxfattribs={"layer": "cut"})
 
     face_x = (w - spec.face_width) / 2.0
