@@ -33,6 +33,8 @@ class PanelSpec:
     k_factor_override: Optional[float] = None
     bend_radius_override: Optional[float] = None
     gap_override: Optional[float] = None
+    stagger_angle: float = 60.0
+    margin: float = 1.25
 
 
 def _to_float(value, default=None):
@@ -89,6 +91,8 @@ def parse_csv(path):
                     k_factor_override=_to_float(row.get("k_factor_override")),
                     bend_radius_override=_to_float(row.get("bend_radius_override")),
                     gap_override=_to_float(row.get("gap_override")),
+                    stagger_angle=_to_float(row.get("stagger_angle"), 60.0),
+                    margin=_to_float(row.get("margin"), 1.25),
                 )
             )
     return out
@@ -156,13 +160,13 @@ def _add_rect(msp, x0, y0, x1, y1, layer: str):
     )
 
 
-def _hole_centers(face_x, face_y, face_w, face_h, hole_dia, pitch, pattern):
+def _hole_centers(face_x, face_y, face_w, face_h, hole_dia, pitch, pattern, stagger_angle, margin):
     centers = []
     radius = hole_dia / 2.0
-    start_x = face_x + radius
-    start_y = face_y + radius
-    max_x = face_x + face_w - radius
-    max_y = face_y + face_h - radius
+    start_x = face_x + margin + radius
+    start_y = face_y + margin + radius
+    max_x = face_x + face_w - margin - radius
+    max_y = face_y + face_h - margin - radius
 
     if pattern == "straight":
         y = start_y
@@ -174,11 +178,13 @@ def _hole_centers(face_x, face_y, face_w, face_h, hole_dia, pitch, pattern):
             y += pitch
         return centers
 
-    row_step = pitch * math.sqrt(3.0) / 2.0
+    alpha = math.radians(stagger_angle)
+    row_step = pitch * math.sin(alpha)
+    offset = pitch * math.cos(alpha)
     row = 0
     y = start_y
     while y <= max_y + 1e-9:
-        x_offset = 0.0 if row % 2 == 0 else pitch / 2.0
+        x_offset = 0.0 if row % 2 == 0 else offset
         x = start_x + x_offset
         while x <= max_x + 1e-9:
             centers.append((x, y))
@@ -237,7 +243,7 @@ def generate_panel_dxf(spec: PanelSpec, outdir: str):
                 _add_rect(msp, jx0, jy0, jx1, jy1, "bend_extent")
 
     for x, y in _hole_centers(
-        face_x, face_y, spec.face_width, spec.face_height, spec.hole_dia, spec.pitch, spec.pattern
+        face_x, face_y, spec.face_width, spec.face_height, spec.hole_dia, spec.pitch, spec.pattern, spec.stagger_angle, spec.margin
     ):
         msp.add_circle((x, y), spec.hole_dia / 2.0, dxfattribs={"layer": "holes"})
 
