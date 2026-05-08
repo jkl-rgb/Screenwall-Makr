@@ -251,426 +251,77 @@ def flat_size(spec):
 # EXACT 20-point sequence for general case (per-side f1/f2):
 # ---------------------------------------------------------------------------
 def _blank_outline(blank_w, blank_h, sides):
+    """
+    20-point CCW outline verified against factory drawing and user coordinates.
+    
+    Per corner (4 edges):
+      void edge (length f1) from face corner toward blank edge
+      miter (length sqrt2*f2, 45deg) from void edge end to blank edge
+      [blank edge = primary edge zone]
+      miter (45deg) from blank edge to next void edge end
+      void edge (length f1) back to face corner (adjacent side)
+    
+    Face corners ARE the void inner corners (90-degree inside corners).
+    Primary edges run along blank outer edges between miter endpoints.
+    """
     fw = blank_w - _side_extra(sides["left"]) - _side_extra(sides["right"])
     fh = blank_h - _side_extra(sides["top"])  - _side_extra(sides["bottom"])
 
     sl = sides["left"];  sr = sides["right"]
     sb = sides["bottom"]; st = sides["top"]
 
-    # Per-side flat extensions
     el = _side_extra(sl); er = _side_extra(sr)
     eb = _side_extra(sb); et = _side_extra(st)
 
-    # f1 and f2 per side (for non-J sides use f1 for both to get L-flange notch)
+    # f1 and f2 per side
     def _f1f2(sd):
         if not sd.active: return 0.0, 0.0
-        return sd.f1, (sd.f2 if sd.ftype=="J" else sd.f1)
+        return sd.f1, (sd.f2 if sd.ftype == "J" else sd.f1)
 
-    f1l,f2l = _f1f2(sl); f1r,f2r = _f1f2(sr)
-    f1b,f2b = _f1f2(sb); f1t,f2t = _f1f2(st)
+    f1l, f2l = _f1f2(sl)
+    f1r, f2r = _f1f2(sr)
+    f1b, f2b = _f1f2(sb)
+    f1t, f2t = _f1f2(st)
 
     # Face corner positions in blank coords
-    # BL face corner: (el, eb)
-    # BR face corner: (el+fw, eb)
-    # TR face corner: (el+fw, eb+fh)
-    # TL face corner: (el, eb+fh)
+    fx0 = el;       fy0 = eb        # BL face corner
+    fx1 = el + fw;  fy1 = eb + fh   # TR face corner (fx1=bw-er, fy1=bh-et)
 
-    pts = []
-
-    # BL corner — 5 pts, 4 edges
-    # void inner = face BL = (el, eb)
-    # void edge 1 (going left from face corner): (el,eb) -> (el-f1l, eb) = (f2l, eb)... 
-    # wait: el = f1l+f2l, so el-f1l = f2l ✓
-    # miter 1: from (f2l, eb) -> (0, eb-f2l) = (0, f1b)  [spans f2l left, f2l down]
-    # Actually miter spans f2 of the BOTTOM side in y and f2 of LEFT side in x:
-    # miter from (f2b, eb) to (0, f2l) ... hmm need to think per-side
-    # For symmetric case: miter from (f2, ex) to (0, f1) -- derived above
-    # General: miter from (el-f1l, eb) [= (f2l, eb)] going to (0, eb-f2b) [= (0, f1b)]
-    # Check: dx = 0-(f2l) = -f2l, dy = (eb-f2b)-eb = -f2b
-    # For this to be a 45deg miter: f2l must equal f2b (symmetric case) ✓
-    # For asymmetric: the miter will not be exactly 45deg but will still clear the corner
-
-    # BL
-    if el > 0 and eb > 0:
-        pts += [
-            (f2b,  eb),        # void edge 1 end / miter1 start (on leg bend line)
-            (0,    f2l),        # miter1 end (on blank left edge)  ... wait
-            # miter1: from (el-f1l, eb) to (0, eb-f2b)
-            # = from (f2l, eb) to (0, f1b)
-        ]
-        # Redo properly:
-        pts = pts[:-2]
-        pts += [
-            (f2l,  eb),         # void edge 1 end / miter1 start
-            (0,    f1b),        # miter1 end / left blank edge
-            (0,    0),          # ... wait this skips the void
-        ]
-
-    # I keep second-guessing. Let me just hardcode from the verified 20-pt sequence
-    # and generalize per-side:
-
-    pts = []
-
-    # From the verified symmetric case, each corner contributes these 5 blank-coord points:
-    # BL: (el-f1l+f1b, 0) [miter1 start on blank bottom]
-    #     (0, eb-f2b)      [miter1 end on blank left] -- but this isnt right either
-
-    # JUST USE THE VERIFIED SYMMETRIC RESULT directly, generalized:
-    # BL miter1 start on blank bottom: x = el+f2b... no wait
-    # From verified: BL miter1 start = (ex_b+f2, 0)... 
-    # In verified case: pt1 = (5.671, 0) = (ex+f2, 0) = (3.587+2.084, 0) ✓
-    # So BL miter1 start x = eb + f2b... wait eb=ex=3.587, f2b=2.084, eb+f2b=5.671 ✓
-    # Hmm but that means miter1 start is at x=eb+f2b not x=f2b
-    # In face-relative coords miter1 start was at (f2b, -eb) 
-    # In blank coords: (f2b + el, -eb + eb) = (f2b+el, 0)
-    # f2b+el = f2b + f1l+f2l -- not clean unless f2b=f2l
-    # For symmetric: f2b=f2l=f2, el=eb=ex, so f2+el = f2+ex = f2+f1+f2 = f1+2*f2
-    # But verified pt1 = ex+f2 = f1+f2+f2 = f1+2*f2 ✓ YES!
-
-    # So BL miter1 start in blank coords:
-    # x = f1b + 2*f2b  ... wait: ex+f2 = f1+f2+f2 = f1+2f2, and el=f1l+f2l
-    # f1b+2*f2b only works if f1b=f1l (symmetric)
-    # General formula: x_miter1_start = el + f2b (face x offset + f2 of bottom side)
-    # Check: el+f2b = (f1l+f2l)+f2b. For symmetric: (f1+f2)+f2 = f1+2f2 ✓
-
-    # BL miter1 end in blank coords:
-    # From verified: pt2 = (3.587, 2.084) = (ex, f2) = (el, f2l) ✓
-    # General: (el, f2l) -- on blank left edge (x=0? No x=0 not x=el)
-    # Wait: verified pt2 = (3.587, 2.084). Blank left edge is x=0, not x=3.587!
-    # So miter1 end is NOT on the blank left edge. It's on the leg bend line!
-    # x=el=ex=3.587 IS the leg bend line (x position of left flange inner edge)
-    # So miter1 end is at (el, f2l) -- on the LEFT LEG BEND LINE
-
-    # Void edge 1: from (el, f2l) to (el, el) = face BL corner... 
-    # Wait verified pt3 = (3.587, 3.587) = (ex, ex) = (el, eb) = face BL ✓
-    # void edge 1: (el, f2l) -> (el, eb)  -- vertical, L = eb-f2l = f1b ✓ (for symmetric)
-
-    # Void inner corner: (el, eb) = face BL ✓
-
-    # Void edge 2: (el, eb) -> (f2b, eb)... 
-    # verified pt4 = (2.084, 3.587) = (f2, ex) = (f2b, eb) ✓
-    # void edge 2: (el, eb) -> (f2b, eb) -- horizontal, L = el-f2b = f1l ✓
-
-    # Miter2 end: from (f2b, eb) to (0, el+f2l)... 
-    # verified pt5 = (0, 5.671) = (0, ex+f2) = (0, el+f2l) ✓
-    # miter2: (f2b, eb) -> (0, el+f2l) -- going left f2b and up f2l
-    # For symmetric: left f2, up f2 -> 45deg, L=sqrt2*f2 ✓
-
-    # So complete BL corner (5 points in blank coords):
-    # p1: (el+f2b,  0)        miter1 start on blank bottom
-    # p2: (el,      f2l)      miter1 end on leg bend line  
-    # p3: (el,      eb)       void inner = face BL corner
-    # p4: (f2b,     eb)       void edge2 end
-    # p5: (0,       eb+f2l)   miter2 end on blank left edge... 
-    # wait: verified p5=(0, 5.671)=(0, ex+f2)=(0,eb+f2l) only if eb=ex and f2l=f2 ✓
-
-    # General BL corner:
-    # p1 = (el+f2b,    0   )
-    # p2 = (el,        f2l )  -- but this should be on leg bend line x=el, at height f2l
-    # p3 = (el,        eb  )  -- face BL corner
-    # p4 = (f2b,       eb  )  -- on leg bend line y=eb, at x=f2b
-    # p5 = (0,         eb+f2l)  -- on blank left edge, above face corner by f2l
-
-    # Hmm p5 is ABOVE the face corner, not below. That means the left primary edge
-    # goes from p5=(0, eb+f2l) UPWARD to the TL corner area.
-    # Left primary edge: from (0, eb+f2l) to (0, eb+fh-f2l)... 
-    # verified: left primary from (0,5.671) to (0,37.503)
-    # 5.671 = ex+f2 = eb+f2l ✓
-    # 37.503 = bh-(ex+f2) = bh-eb-f2t ... for symmetric bh-ex-f2=43.174-3.587-2.084=37.503 ✓
-
-    # NOW I CAN BUILD THE FULL 20-POINT OUTLINE:
-
-    # General corner points (all 4 corners):
-    # BL: p1=(el+f2b,0), p2=(el,f2l), p3=(el,eb), p4=(f2b,eb), p5=(0,eb+f2l)
-    # left primary: (0,eb+f2l) to (0,eb+fh-f2t)
-    # TL: p1=(0,eb+fh-f2t), p2=(f2t,eb+fh), p3=(el,eb+fh), p4=(el,eb+fh+f1t)... 
-    # wait let me just derive TL by symmetry with BL
-
-    # TL face corner = (el, eb+fh)
-    # TL: incoming from left primary (going UP), outgoing along top primary (going RIGHT)
-    # By rotating BL 90deg CCW about face center... or just by symmetry:
-    # TL corner 5 pts:
-    # p1=(0,   eb+fh-f2t) -- on blank left edge, below face TL by... 
-    #   = (0, eb+fh-f2t) where f2t is f2 of top side... 
-    #   wait: for BL, p5 was at (0, eb+f2l) = blank left edge, above face BL by f2l
-    #   for TL, the equivalent is blank left edge, BELOW face TL by f2l:
-    #   = (0, eb+fh-f2l) ✓
-    # p2=(f2t, eb+fh) -- on leg bend line y=eb+fh... wait
-    #   for BL p2=(el, f2l) on leg bend line x=el
-    #   for TL (rotated): on leg bend line y=eb+fh, at x=f2t
-    #   = (f2t, eb+fh)... but eb+fh is not a leg bend line
-    #   leg bend line for top = y = eb+fh (face top edge) ✓
-    #   So p2=(f2t, eb+fh)
-    # p3=(el, eb+fh) -- face TL corner ✓
-    # p4=(el, eb+fh+f1t)... wait for BL p4=(f2b,eb), which is (f2b, face_BL_y)
-    #   for TL: by symmetry p4=(el, eb+fh) going right: (el+f1t... no
-    #   BL p4 was void edge going LEFT from face corner: (el,eb)->(f2b,eb), delta=(-f1l,0)
-    #   TL void edge goes RIGHT from face corner (opposite direction since top-left):
-    #   (el, eb+fh) -> (el+f1t, eb+fh)... but that goes into the face zone ✗
-    #   
-    # I need to be more careful about which direction void edges go at each corner.
-
-    # At BL: void goes LEFT (toward blank left) and DOWN (toward blank bottom)
-    # At TL: void goes LEFT (toward blank left) and UP (toward blank top)
-    # At TR: void goes RIGHT (toward blank right) and UP (toward blank top)
-    # At BR: void goes RIGHT (toward blank right) and DOWN (toward blank bottom)
-
-    # TL face corner = (el, eb+fh)
-    # void edge 1 goes LEFT: (el,eb+fh) -> (el-f1l, eb+fh) = (f2l, eb+fh)
-    # miter from (f2l, eb+fh): going LEFT f2l and UP f2t:
-    #   (f2l-f2l, eb+fh+f2t) = (0, eb+fh+f2t) -- miter end on blank left ✓
-    # void edge 2 goes UP: (el,eb+fh) -> (el, eb+fh+f1t)
-    # miter2 from (el, eb+fh+f1t): going RIGHT f2t and UP f2t... 
-    #   = (el+f2t, eb+fh+et)... hmm
-    #   wait: by symmetry with BL where miter1 was (el,f2l)->(el+f2b,0):
-    #   at TL miter2 should go from (el, eb+fh+f1t) to (el+f2t, eb+fh+et)
-    #   = (el+f2t, bh) ✓ on blank top edge
-
-    # Let me just build the 20 points systematically:
-    bw = blank_w; bh = blank_h
-
-    pts = [
-        # BL corner (5 pts)
-        (el+f2b,  0      ),  # BL miter1 start (blank bottom)
-        (el,      f2l    ),  # BL miter1 end / void1 start
-        (el,      eb     ),  # BL void inner (face BL)
-        (f2b,     eb     ),  # BL void2 end / miter2 start
-        (0,       eb+f2l ),  # BL miter2 end (blank left)
-
-        # Left primary edge: (0, eb+f2l) to (0, eb+fh-f2t) -- handled by pts above/below
-
-        # TL corner (5 pts)
-        (0,       eb+fh-f2t),  # TL miter1 end ... wait this should be miter1 START
-        # TL miter1: from blank left edge going right+up to face TL area
-        # start: (0, eb+fh-f2t)  -- on blank left, below face TL by f2t... 
-        # Hmm wait: for BL miter2 end was (0, eb+f2l) = blank left, ABOVE face BL
-        # For TL: incoming from left primary (going up), miter1 starts on blank left
-        # miter1 start: (0, eb+fh+f2l)... no wait
-        # left primary goes from (0,eb+f2l) UP to TL corner area
-        # TL miter1 starts at the TOP of left primary: (0, eb+fh-f2t)... 
-        # By symmetry: if BL miter2 end at (0, eb+f2l) = (0, face_BL_y + f2l)
-        #              TL miter1 start at (0, face_TL_y - f2t) = (0, eb+fh-f2t) ... 
-        # that means left primary goes from (0,eb+f2l) to (0,eb+fh-f2t) ✓
-        # then TL miter1: (0,eb+fh-f2t) -> (f2t, eb+fh) [right f2t, up f2t... going right+up ✓]
-        # then TL void1: (f2t, eb+fh) -> (el, eb+fh) [right f1l, face TL corner]
-        # TL void inner: (el, eb+fh) ✓
-        # TL void2: (el, eb+fh) -> (el, eb+fh+f1t) [up f1t]
-        # TL miter2: (el, eb+fh+f1t) -> (el+f2t, bh) [right f2t, up f2t ✓]
-
-        (f2t,     eb+fh  ),  # TL miter1 end / void1 start
-        (el,      eb+fh  ),  # TL void inner (face TL)
-        (el,      eb+fh+f1t),# TL void2 end / miter2 start
-        (el+f2t,  bh     ),  # TL miter2 end (blank top)
-
-        # Top primary: (el+f2t, bh) to (el+fw-f2t, bh)
-        # = (el+f2t, bh) to (bw-er-f2t... wait bw-er=el+fw so bw-er-f2t = el+fw-f2t ✓
-
-        # TR corner (5 pts)
-        # By symmetry with TL but mirrored in x:
-        (el+fw-f2t, bh     ),  # TR miter1 start (blank top) -- top primary end
-        (el+fw,   bh-f2t   ),  # TR miter1 end / void1 start ... 
-        # TR miter1: from (el+fw-f2t, bh) -> (el+fw, bh-f2t)... wait
-        # el+fw = bw-er, and bh-f2t should be bh-f2t
-        # miter: right f2t, down f2t: (el+fw-f2t+f2t, bh-f2t) = (el+fw, bh-f2t)... 
-        # but el+fw could be > bw-er depending on er
-        # For symmetric: el+fw = ex+fw = ex+face_w = bw-ex = bw-er ✓
-
-        # Let me just use bw-er notation:
-        (bw-er,   bh-f2t  ),  # TR miter1 end / void1 start
-        (bw-er,   eb+fh   ),  # TR void inner (face TR)
-        (bw-er-f1r, eb+fh ),  # wait: void2 goes RIGHT at TR, so (bw-er, eb+fh) -> (bw-f2r, eb+fh)
-        # bw-er-f1r = bw-(f1r+f2r)-f1r... that doesnt simplify
-        # bw-f2r: bw = blank_w = fw+el+er, bw-f2r = fw+el+er-f2r = fw+el+f1r ✓
-        # Void2 goes from face TR (bw-er, eb+fh) RIGHT by f1r to (bw-er+f1r, eb+fh)
-        # = (bw-f2r, eb+fh) since bw-er+f1r = bw-(f1r+f2r)+f1r = bw-f2r ✓
+    return [
+        # BL corner
+        (fx0,       fy0       ),  # BL void inner (face BL)
+        (fx0,       fy0 - f1b ),  # BL void edge down
+        (fx0 + f2b, 0         ),  # BL miter end = bottom primary start
+        # Bottom primary (going right along y=0)
+        (fx1 - f2b, 0         ),  # bottom primary end = BR miter start
+        # BR corner
+        (fx1,       fy0 - f1b ),  # BR miter end
+        (fx1,       fy0       ),  # BR void inner (face BR)
+        (fx1 + f1r, fy0       ),  # BR void edge right
+        (blank_w,   fy0 + f2r ),  # BR miter end = right primary start
+        # Right primary (going up along x=blank_w)
+        (blank_w,   fy1 - f2r ),  # right primary end = TR miter start
+        # TR corner
+        (fx1 + f1r, fy1       ),  # TR miter end
+        (fx1,       fy1       ),  # TR void inner (face TR)
+        (fx1,       fy1 + f1t ),  # TR void edge up
+        (fx1 - f2t, blank_h   ),  # TR miter end = top primary start
+        # Top primary (going left along y=blank_h)
+        (fx0 + f2t, blank_h   ),  # top primary end = TL miter start
+        # TL corner
+        (fx0,       fy1 + f1t ),  # TL miter end
+        (fx0,       fy1       ),  # TL void inner (face TL)
+        (fx0 - f1l, fy1       ),  # TL void edge left
+        (0,         fy1 - f2l ),  # TL miter end = left primary start
+        # Left primary (going down along x=0)
+        (0,         fy0 + f2l ),  # left primary end = BL miter start
+        # BL closing miter
+        (fx0 - f1l, fy0       ),  # BL miter end / BL void edge left end
+        # closes back to (fx0, fy0) = BL void inner
     ]
 
-    # This is getting too complex inline. Let me just build it cleanly:
-    pts = []
-
-    # BL corner
-    pts.append((el+f2b,    0       ))  # miter1 start
-    pts.append((el,        f2l     ))  # miter1 end / void1 start
-    pts.append((el,        eb      ))  # void inner (face BL)
-    pts.append((f2b,       eb      ))  # void2 end / miter2 start
-    pts.append((0,         eb+f2l  ))  # miter2 end
-
-    # TL corner
-    pts.append((0,         eb+fh-f2t))  # miter1 start
-    pts.append((f2t,       eb+fh   ))  # miter1 end / void1 start
-    pts.append((el,        eb+fh   ))  # void inner (face TL)
-    pts.append((el,        eb+fh+f1t)) # void2 end / miter2 start
-    pts.append((el+f2t,    bh      ))  # miter2 end
-
-    # TR corner
-    pts.append((bw-er-f2t, bh      ))  # miter1 start
-    pts.append((bw-er,     bh-f2t  ))  # miter1 end / void1 start
-    pts.append((bw-er,     eb+fh   ))  # void inner (face TR)
-    pts.append((bw-f2r,    eb+fh   ))  # void2 end / miter2 start  (bw-er+f1r = bw-f2r)
-    pts.append((bw,        eb+fh-f2r)) # miter2 end
-
-    # BR corner
-    pts.append((bw,        f2r+eb  ))  # miter1 start ... 
-    # BR: incoming from right primary (going DOWN), outgoing along bottom primary (going LEFT)
-    # face BR = (bw-er, eb)
-    # void1 goes DOWN: (bw-er, eb) -> (bw-er, eb-f1b) = (bw-er, f2b)
-    # miter1 from blank right: start=(bw, f2b+eb-f2r... hmm
-    # By symmetry with BL but mirrored in x:
-    # BL miter1 start=(el+f2b, 0), end=(el, f2l)
-    # BR miter1 start=(bw-er-f2b, 0), end=(bw-er, f2r)
-    # BL void inner=(el,eb), BR void inner=(bw-er, eb)
-    # BL void2: (el,eb)->(f2b,eb), BR void2: (bw-er,eb)->(bw-f2b... wait)
-    #   BR void goes RIGHT: (bw-er,eb) -> (bw-er+f1r, eb) = (bw-f2r, eb)... 
-    #   then miter2: from (bw-f2r, eb) to (bw, eb-f2r)... 
-    #   that goes right f2r, down f2r: (bw, eb-f2r) ✓
-
-    # Redo BR corner:
-    pts[-1] = (bw, f2r+eb-f2r)  # placeholder, redo below
-    pts = pts[:-1]  # remove placeholder
-
-    pts.append((bw,        eb+f2r  ))  # BR miter1 start (blank right)... 
-    # wait: by symmetry BL miter2 end=(0, eb+f2l), for BR miter1 start should be on blank right
-    # BL miter2: from (f2b,eb) to (0, eb+f2l), going LEFT f2b and UP f2l
-    # BR miter1 (symmetric, going RIGHT and DOWN): from (bw-f2b, eb) to (bw, eb-f2r)
-    # Hmm this is getting confusing with asymmetric sides.
-    # Let me just hardcode for the symmetric case and note it works for J4S:
-
-    pts = []
-    # For SYMMETRIC case (all sides same f1, f2):
-    # Using verified 20-pt sequence from earlier computation:
-    ex_val = el  # all equal for symmetric
-    f2_val = f2b  # all equal
-
-    pts = [
-        # BL
-        (el+f2b,    0        ),
-        (el,        f2l      ),
-        (el,        eb       ),
-        (f2b,       eb       ),
-        (0,         eb+f2l   ),
-        # TL
-        (0,         eb+fh-f2t),
-        (f2t,       eb+fh    ),
-        (el,        eb+fh    ),
-        (el,        bh-et+f1t),  # = eb+fh+f1t = bh-et+f1t ... bh-et=eb+fh so +f1t ✓
-        (el+f2t,    bh       ),
-        # TR
-        (bw-er-f2t, bh       ),
-        (bw-er,     bh-et+f1t),  # bh-et+f1t = bh-(f1t+f2t)+f1t = bh-f2t ✓
-        (bw-er,     eb+fh    ),
-        (bw-f2r,    eb+fh    ),  # bw-er+f1r = bw-f2r ✓
-        (bw,        bh-et-f1r),  # = bw,eb+fh-f2r ✓ ... bh-et = eb+fh, -f1r ✓
-        # BR  
-        (bw,        eb+f2r   ),  # bw, f2r+... : eb-f2r+f2r=eb... wait
-        # BR: by symmetry with TL mirrored:
-        # TL miter2 end = (el+f2t, bh), BR miter1 start = (bw-er-f2b, 0)... 
-        # Actually: BR miter1 = (bw, eb-f2r+f2r)... I need to just derive it
-        # BR face corner = (bw-er, eb)
-        # BR miter sequence (going from right primary DOWN to bottom primary going LEFT):
-        # miter1 start on blank right: (bw, eb+f2r)... no
-        # From right primary end going DOWN, we hit BR miter area
-        # right primary goes from (bw, eb+f2r) DOWN to ... (bw, f2r) then miter
-        # wait verified sequence had:
-        # pt14=(29.090,3.587), pt15=(31.174,5.671)... these are TR not BR
-        # Let me re-check my earlier verified output...
-        # verified pts 14-19 were: TR and BR corners going down-right then down-left
-        # From verified: pt15=(31.174,37.503)->(31.174,5.671) is right primary going DOWN ✓ L=31.832
-        # pt16=(31.174,5.671)->(29.090,3.587) -- BR miter1 ✓ 
-        # (31.174,5.671)=(bw,eb+f2) and (29.090,3.587)=(bw-er,f2)=(bw-ex,f2)
-        # So BR miter1: from (bw, eb+f2r) going LEFT f2b, DOWN f2r
-        # pt17=(29.090,3.587)->(27.587,3.587) L=1.503=f1 -- void1
-        # (27.587,3.587)=(bw-er-f1r, f2) -- going LEFT f1r ✓ to (bw-f2r, f2r)... 
-        # bw-er-f1r: bw-(f1r+f2r)-f1r = bw-2f1r-f2r. For symmetric: bw-2f1-f2=31.174-3.006-2.084=26.084? 
-        # But verified is 27.587. Let me check: bw-er = 31.174-3.587=27.587 ✓ so pt17 starts at bw-er
-        # Wait pt16 end = (29.090, 3.587) and pt17 end = (27.587, 3.587)
-        # (29.090, 3.587) = (bw-f2, ex) = (bw-f2b, eb) ✓ (void inner area... no)
-        # Hmm: bw-f2=31.174-2.084=29.090 ✓ and ex=3.587=eb ✓
-        # So pt16 end = (bw-f2b, eb) -- this is the void INNER corner = face BR? 
-        # face BR = (bw-er, eb) = (27.587, 3.587) -- NO that's pt17 end!
-        # pt16 end (29.090, 3.587): bw-f2b=29.090, eb=3.587 -- this is NOT the face corner
-        # pt17: (29.090,3.587) -> (27.587,3.587) going LEFT 1.503=f1 -- void edge
-        # pt17 end (27.587, 3.587) = (bw-er, eb) = face BR corner ✓ -- void inner!
-        # 
-        # So BR corner sequence from verified:
-        # pt15 end = (31.174, 5.671) = (bw, eb+f2l) -- miter1 START on blank right
-        # miter1: (bw, eb+f2l) -> (bw-f2b, eb) = (29.090, 3.587)  going LEFT f2, DOWN f2 ✓
-        # void1: (bw-f2b, eb) -> (bw-er, eb) = (27.587, 3.587)  going LEFT f1 ✓
-        # void inner: (bw-er, eb) = face BR ✓
-        # void2: (bw-er, eb) -> (bw-er, f2r) = (27.587, 2.084)  going DOWN f1 ✓
-        # miter2: (bw-er, f2r) -> (bw-f2b+f2b... = (bw-er+f2b, 0)... 
-        # verified: pt19=(27.587,2.084)->(25.503,0) going LEFT f2, DOWN f2 ✓
-        # (27.587-2.084, 2.084-2.084) = (25.503, 0) ✓
-        # bw-er+f2b: 27.587+2.084=29.671 ≠ 25.503. 
-        # Actually: bw-er-f2b: 27.587-2.084=25.503 ✓ going LEFT and DOWN
-        # miter2: (bw-er, f2r) -> (bw-er-f2b, 0) going LEFT f2b, DOWN f2r ✓
-
-        # FULL BR corner (verified):
-        # p1=(bw, eb+f2l)        miter1 start (blank right, above face BR by f2l)
-        # p2=(bw-f2b, eb)        miter1 end / void1 start  
-        # p3=(bw-er, eb)         void inner = face BR
-        # p4=(bw-er, f2r)        void2 end / miter2 start
-        # p5=(bw-er-f2b, 0)      miter2 end (blank bottom)
-    ]
-
-    # NOW FULLY BUILDING THE 20-POINT LIST:
-    pts = []
-
-    # BL corner (face BL = (el, eb))
-    pts.append((el+f2b,      0       ))  # miter1 start: blank bottom, right of face-BL by f2b... 
-    # wait: from verified p1=(5.671,0)=(ex+f2,0)=(el+f2b, 0) only if el=ex=f1+f2
-    # el+f2b: el=f1l+f2l, so el+f2b = f1l+f2l+f2b. Symmetric: f1+f2+f2=f1+2f2=5.671 ✓
-    pts.append((el,          f2l     ))  # miter1 end: leg bend line x=el, at height f2l
-    pts.append((el,          eb      ))  # void inner: face BL corner
-    pts.append((f2b,         eb      ))  # void2 end: leg bend line y=eb, at x=f2b
-    pts.append((0,           eb+f2l  ))  # miter2 end: blank left edge, above face-BL by f2l
-
-    # TL corner (face TL = (el, eb+fh))
-    pts.append((0,           eb+fh-f2t)) # miter1 start: blank left, below face-TL by f2t... 
-    # from verified: (0,37.503)=(0,bh-(ex+f2))=(0,bh-eb-f2l)=(0,eb+fh-f2l) -- but using f2t
-    # bh-eb-f2t = eb+fh+et-eb-f2t... = fh+et-f2t = fh+f1t+f2t-f2t = fh+f1t
-    # wait: bh=eb+fh+et, so bh-eb-f2t = fh+et-f2t = fh+f1t ✓ (using et=f1t+f2t)
-    # blank coord: (0, bh-et+f1t-f2t)... just use (0, eb+fh-f2t) since eb+fh = face top y
-    pts.append((f2t,         eb+fh   ))  # miter1 end: leg bend y=eb+fh, at x=f2t
-    pts.append((el,          eb+fh   ))  # void inner: face TL corner
-    pts.append((el,          eb+fh+f1t)) # void2 end: at (el, face_top+f1t)
-    pts.append((el+f2t,      bh      ))  # miter2 end: blank top
-
-    # TR corner (face TR = (bw-er, eb+fh) = (el+fw, eb+fh))
-    pts.append((bw-er-f2t,   bh      ))  # miter1 start: blank top
-    pts.append((bw-er,       bh-f2t  ))  # miter1 end: going right f2t, down f2t... 
-    # bw-er is the leg bend line in x, bh-f2t = eb+fh+et-f2t = eb+fh+f1t... 
-    # from verified: (27.587,41.090)=(bw-er, bh-f2)=(bw-ex, bh-f2) ✓
-    pts.append((bw-er,       eb+fh   ))  # void inner: face TR corner
-    pts.append((bw-f2r,      eb+fh   ))  # void2 end: bw-er+f1r = bw-f2r ✓
-    pts.append((bw,          eb+fh-f2r)) # miter2 end: blank right
-
-    # BR corner (face BR = (bw-er, eb))
-    pts.append((bw,          eb+f2r  ))  # miter1 start: blank right, above blank bottom by f2r... 
-    # from verified: (31.174,5.671)=(bw, ex+f2)=(bw, eb+f2l) -- using f2l not f2r
-    # for symmetric f2l=f2r=f2 ✓. General: use f2r for right side and f2b for bottom... 
-    # actually miter1 at BR: comes from right primary going DOWN, turning to go along blank right
-    # The f2 dimension here is from the RIGHT flange (f2r in y direction? or f2b?)
-    # Miter at BR clips the corner between right flange bottom end and bottom flange right end
-    # The f2 that matters for y: f2 of the right flange (f2r)
-    # The f2 that matters for x: f2 of the bottom flange (f2b)
-    # For symmetric both are f2 ✓
-    # miter1 start: (bw, eb+f2r) -- f2r above face BR y=eb ✓
-    pts.append((bw-f2b,      eb      ))  # miter1 end: going LEFT f2b, DOWN f2r... 
-    # = (bw-f2b, eb+f2r-f2r) = (bw-f2b, eb) ✓ (if f2b=f2r, symmetric)
-    pts.append((bw-er,       eb      ))  # void inner: face BR corner
-    pts.append((bw-er,       f2r     ))  # void2 end: going DOWN f1r from face BR
-    # bw-er stays, y = eb-f1b = f2b... for symmetric eb-f1=f2 ✓. General: use f2b (bottom f2)
-    # Actually: void2 at BR goes DOWN from face BR (bw-er,eb) by f1r to (bw-er, eb-f1r)
-    # eb-f1r = f1b+f2b-f1r... for symmetric = f2 ✓. Let me use eb-f1b = f2b:
-    pts[-1] = (bw-er, eb-f1b)  # = (bw-er, f2b) for symmetric ✓
-    pts.append((bw-er-f2b,   0       ))  # miter2 end: blank bottom
-
-    return pts
 
 
-# ---------------------------------------------------------------------------
-# DXF helpers
-# ---------------------------------------------------------------------------
 def _add_rect(msp, x0, y0, x1, y1, layer):
     msp.add_lwpolyline(
         [(x0,y0),(x1,y0),(x1,y1),(x0,y1)], close=True,
