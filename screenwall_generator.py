@@ -239,10 +239,11 @@ def _blank_outline(blank_w, blank_h, sides, bd):
     fx0 = el+bd;     fy0 = eb+bd      # BL hard corner
     fx1 = bw-er-bd;  fy1 = bh-et-bd  # TR hard corner
 
-    f1l = sl.f1 if sl.active else 0.0
-    f1r = sr.f1 if sr.active else 0.0
-    f1b = sb.f1 if sb.active else 0.0
-    f1t = st.f1 if st.active else 0.0
+    # Void edge length = f1+BD so miter starts exactly at bend2 line
+    f1l = (sl.f1+bd) if sl.active else 0.0
+    f1r = (sr.f1+bd) if sr.active else 0.0
+    f1b = (sb.f1+bd) if sb.active else 0.0
+    f1t = (st.f1+bd) if st.active else 0.0
 
     f2l = sl.f2 if sl.active else 0.0
     f2r = sr.f2 if sr.active else 0.0
