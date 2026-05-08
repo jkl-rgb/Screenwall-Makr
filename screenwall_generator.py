@@ -345,89 +345,96 @@ def flat_size(spec: PanelSpec) -> tuple[float, float]:
 
 
 # ---------------------------------------------------------------------------
-# Blank outline — CCW walk BL->BR->TR->TL
+# Blank outline
 #
-# Corner geometry verified against factory drawing (135° miter):
-#   Both sides flanged + any J: square notch + miter across lip zone
-#   Both sides L: plain square notch
-#   One side only: straight cut
-#   Neither: plain corner point
+# Verified against factory reference drawing:
 #
-# arrive_horiz=False: arriving along vertical edge (left/right)
-# arrive_horiz=True:  arriving along horizontal edge (bottom/top)
-# horiz_sd: SideDef for the x-direction flange at this corner
-# vert_sd:  SideDef for the y-direction flange at this corner
+# J flanges: blank outline is a FULL RECTANGLE. The miter is a separate
+#   internal cut line drawn between the two bend lines at each corner.
+#   The outer blank corner is always a right angle.
+#
+# L flanges: blank outline has a square notch cut at each corner where
+#   two L flanges meet (removes material so legs don't collide).
+#   Corner notch size = f1_h x f1_v.
+#
+# Mixed corners (one J + one L, or inactive): straight cut / right angle.
 # ---------------------------------------------------------------------------
 def _blank_outline(blank_w, blank_h, sides):
     w, h = blank_w, blank_h
-
-    def _corner(horiz_sd, vert_sd, cx, cy, arrive_horiz):
-        sx = 1.0 if cx == 0.0 else -1.0
-        sy = 1.0 if cy == 0.0 else -1.0
-        ex = _side_extra(horiz_sd)
-        ey = _side_extra(vert_sd)
-
-        if ex == 0 and ey == 0:
-            return [(cx, cy)]
-        if ex == 0:
-            if arrive_horiz:
-                return [(cx, cy)]
-            else:
-                return [(cx, cy + sy * ey), (cx, cy)]
-        if ey == 0:
-            if arrive_horiz:
-                return [(cx, cy), (cx + sx * ex, cy)]
-            else:
-                return [(cx, cy)]
-
-        f2x = horiz_sd.f2 if horiz_sd.ftype == "J" else 0.0
-        f2y = vert_sd.f2  if vert_sd.ftype  == "J" else 0.0
-        has_miter = (f2x > 0 or f2y > 0)
-
-        if not has_miter:
-            # L+L plain square notch
-            if arrive_horiz:
-                return [
-                    (cx + sx * ex, cy),
-                    (cx + sx * ex, cy + sy * ey),
-                    (cx,           cy + sy * ey),
-                ]
-            else:
-                return [
-                    (cx,           cy + sy * ey),
-                    (cx + sx * ex, cy + sy * ey),
-                    (cx + sx * ex, cy),
-                ]
-
-        # J miter corner:
-        # Full square notch (ex x ey) with inner right-angle replaced by
-        # miter diagonal from (cx+sx*ex, cy+sy*f2y) to (cx+sx*f2x, cy+sy*ey)
-        # This produces the 135-degree corner seen in the factory drawing.
-        miter_a = (cx + sx * ex,  cy + sy * f2y)  # on outer notch edge, at lip depth y
-        miter_b = (cx + sx * f2x, cy + sy * ey)   # on outer notch edge, at lip depth x
-
-        if arrive_horiz:
-            return [
-                (cx + sx * ex, cy),        # notch start on horiz blank edge
-                miter_a,                   # miter top
-                miter_b,                   # miter bottom
-                (cx,           cy + sy * ey),  # notch end on vert blank edge
-            ]
-        else:
-            return [
-                (cx,           cy + sy * ey),  # notch start on vert blank edge
-                miter_b,                       # miter bottom
-                miter_a,                       # miter top
-                (cx + sx * ex, cy),            # notch end on horiz blank edge
-            ]
-
     sl, sr, sb, st = sides["left"], sides["right"], sides["bottom"], sides["top"]
+
+    ex_l = _side_extra(sl)
+    ex_r = _side_extra(sr)
+    ex_b = _side_extra(sb)
+    ex_t = _side_extra(st)
+
+    def _is_J(sd): return sd.active and sd.ftype == "J"
+    def _is_L(sd): return sd.active and sd.ftype == "L"
+
+    # Build outline CCW: BL -> bottom edge -> BR -> right edge ->
+    #                    TR -> top edge    -> TL -> left edge -> close
     pts = []
-    pts += _corner(sb, sl, 0.0, 0.0, arrive_horiz=False)  # BL
-    pts += _corner(sb, sr, w,   0.0, arrive_horiz=True)   # BR
-    pts += _corner(st, sr, w,   h,   arrive_horiz=False)  # TR
-    pts += _corner(st, sl, 0.0, h,   arrive_horiz=True)   # TL
+
+    # BL corner (0,0): horiz=bottom, vert=left
+    if _is_L(sb) and _is_L(sl):
+        # L+L notch: remove corner square
+        pts += [(0.0, ex_l), (ex_b, ex_l), (ex_b, 0.0)]
+    else:
+        pts += [(0.0, 0.0)]  # right angle, no notch
+
+    # BR corner (w,0): horiz=bottom, vert=right
+    if _is_L(sb) and _is_L(sr):
+        pts += [(w - ex_b, 0.0), (w - ex_b, ex_r), (w, ex_r)]
+    else:
+        pts += [(w, 0.0)]
+
+    # TR corner (w,h): horiz=top, vert=right
+    if _is_L(st) and _is_L(sr):
+        pts += [(w, h - ex_r), (w - ex_t, h - ex_r), (w - ex_t, h)]
+    else:
+        pts += [(w, h)]
+
+    # TL corner (0,h): horiz=top, vert=left
+    if _is_L(st) and _is_L(sl):
+        pts += [(ex_t, h), (ex_t, h - ex_l), (0.0, h - ex_l)]
+    else:
+        pts += [(0.0, h)]
+
     return pts
+
+
+def _draw_corner_miters(msp, blank_w, blank_h, sides):
+    """
+    Draw miter cut lines inside J corners on the cut layer.
+    Each miter runs diagonally through the leg zone from the leg bend line
+    on one side to the leg bend line on the other side, at the lip depth.
+    This is the internal relief cut that prevents J legs from colliding.
+    """
+    sl, sr, sb, st = sides["left"], sides["right"], sides["bottom"], sides["top"]
+
+    def _is_J(sd): return sd.active and sd.ftype == "J"
+
+    ex_l = _side_extra(sl)
+    ex_r = _side_extra(sr)
+    ex_b = _side_extra(sb)
+    ex_t = _side_extra(st)
+
+    # BL: bottom J + left J
+    if _is_J(sb) and _is_J(sl):
+        _add_line(msp, sb.f2, ex_b, ex_l, sl.f2, "cut")
+
+    # BR: bottom J + right J
+    if _is_J(sb) and _is_J(sr):
+        _add_line(msp, blank_w - ex_b, sr.f2, blank_w - sb.f2, ex_r, "cut")
+
+    # TR: top J + right J
+    if _is_J(st) and _is_J(sr):
+        _add_line(msp, blank_w - st.f2, blank_h - ex_r,
+                  blank_w - ex_t, blank_h - sr.f2, "cut")
+
+    # TL: top J + left J
+    if _is_J(st) and _is_J(sl):
+        _add_line(msp, ex_t, blank_h - sl.f2, sl.f2, blank_h - ex_l, "cut")
 
 
 # ---------------------------------------------------------------------------
@@ -492,15 +499,17 @@ def _draw_bend_lines(msp, face_x, face_y, face_w, face_h,
     if gap > 0:
         _add_rect(msp, fx0+gap, fy0+gap, fx1-gap, fy1-gap, "bend_extent")
 
+    # Lip bend lines drawn only across face zone width/height
+    # so they are visually distinct from face perimeter bend lines
     sd = sides
     if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
-        _add_line(msp, 0, sd["bottom"].f2, blank_w, sd["bottom"].f2, "bend")
+        _add_line(msp, fx0, sd["bottom"].f2, fx1, sd["bottom"].f2, "bend")
     if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
-        _add_line(msp, 0, blank_h - sd["top"].f2, blank_w, blank_h - sd["top"].f2, "bend")
+        _add_line(msp, fx0, blank_h - sd["top"].f2, fx1, blank_h - sd["top"].f2, "bend")
     if sd["left"].active and sd["left"].ftype == "J" and sd["left"].f2 > 0:
-        _add_line(msp, sd["left"].f2, 0, sd["left"].f2, blank_h, "bend")
+        _add_line(msp, sd["left"].f2, fy0, sd["left"].f2, fy1, "bend")
     if sd["right"].active and sd["right"].ftype == "J" and sd["right"].f2 > 0:
-        _add_line(msp, blank_w - sd["right"].f2, 0, blank_w - sd["right"].f2, blank_h, "bend")
+        _add_line(msp, blank_w - sd["right"].f2, fy0, blank_w - sd["right"].f2, fy1, "bend")
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +623,8 @@ def generate_panel_dxf(spec: PanelSpec, outdir: str):
 
     pts = _blank_outline(blank_w, blank_h, sides)
     msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
+
+    _draw_corner_miters(msp, blank_w, blank_h, sides)
 
     _draw_bend_lines(msp, face_x, face_y, spec.face_width, spec.face_height,
                      blank_w, blank_h, sides, gap)
