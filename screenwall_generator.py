@@ -250,7 +250,7 @@ def flat_size(spec):
 #
 # EXACT 20-point sequence for general case (per-side f1/f2):
 # ---------------------------------------------------------------------------
-def _blank_outline(blank_w, blank_h, sides):
+def _blank_outline(blank_w, blank_h, sides, bd=0.0):
     """
     20-point CCW outline verified against factory drawing and user coordinates.
     
@@ -283,9 +283,13 @@ def _blank_outline(blank_w, blank_h, sides):
     f1b, f2b = _f1f2(sb)
     f1t, f2t = _f1f2(st)
 
-    # Face corner positions in blank coords
-    fx0 = el;       fy0 = eb        # BL face corner
-    fx1 = el + fw;  fy1 = eb + fh   # TR face corner (fx1=bw-er, fy1=bh-et)
+    # Hard corner (void inner) positions in blank coords
+    # Hard corners sit BD inboard of the flange zone edges
+    fx0 = el + bd;      fy0 = eb + bd        # BL hard corner
+    fx1 = el + fw - bd; fy1 = eb + fh - bd   # TR hard corner
+    # Recompute fw/fh as hard-corner-to-hard-corner dimensions
+    fw = fx1 - fx0
+    fh = fy1 - fy0
 
     return [
         # BL corner
@@ -355,21 +359,55 @@ def _hole_centers(face_x, face_y, face_w, face_h,
     return centers
 
 
+def _ba_half(r, k, t):
+    """BA/2 = half bend allowance = offset from hard corner to bend CL."""
+    return (math.pi / 4.0) * (r + k * t)
+
+
 def _draw_bend_lines(msp, face_x, face_y, face_w, face_h,
-                     blank_w, blank_h, sides, gap):
-    fx0,fy0 = face_x,face_y
-    fx1,fy1 = face_x+face_w, face_y+face_h
-    _add_rect(msp, fx0,fy0,fx1,fy1, "bend")
-    if gap>0: _add_rect(msp,fx0+gap,fy0+gap,fx1-gap,fy1-gap,"bend_extent")
-    sd=sides
-    if sd["bottom"].active and sd["bottom"].ftype=="J" and sd["bottom"].f2>0:
-        _add_line(msp, fx0,sd["bottom"].f2, fx1,sd["bottom"].f2, "bend")
-    if sd["top"].active and sd["top"].ftype=="J" and sd["top"].f2>0:
-        _add_line(msp, fx0,blank_h-sd["top"].f2, fx1,blank_h-sd["top"].f2, "bend")
-    if sd["left"].active and sd["left"].ftype=="J" and sd["left"].f2>0:
-        _add_line(msp, sd["left"].f2,fy0, sd["left"].f2,fy1, "bend")
-    if sd["right"].active and sd["right"].ftype=="J" and sd["right"].f2>0:
-        _add_line(msp, blank_w-sd["right"].f2,fy0, blank_w-sd["right"].f2,fy1, "bend")
+                     blank_w, blank_h, sides, rules):
+    """
+    Draw two bend centerlines per active J side:
+      Bend 1 (leg, tight to face): BA/2 outward from hard corner
+      Bend 2 (lip return):         at f2 inward from blank edge (miter start line)
+    No bend_extent rectangle.
+    """
+    r = rules["r"]; k = rules["k"]; t = rules["t"]
+    ba2 = _ba_half(r, k, t)   # ~0.147" for 0.1875" 3003
+
+    fx0, fy0 = face_x, face_y
+    fx1, fy1 = face_x + face_w, face_y + face_h
+    sd = sides
+
+    # Bend 2 (lip return) — at f2 from blank edge, spanning face zone width/height
+    # This is the line at the miter start, already correctly positioned
+    if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
+        y = sd["bottom"].f2
+        _add_line(msp, fx0, y, fx1, y, "bend")
+    if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
+        y = blank_h - sd["top"].f2
+        _add_line(msp, fx0, y, fx1, y, "bend")
+    if sd["left"].active and sd["left"].ftype == "J" and sd["left"].f2 > 0:
+        x = sd["left"].f2
+        _add_line(msp, x, fy0, x, fy1, "bend")
+    if sd["right"].active and sd["right"].ftype == "J" and sd["right"].f2 > 0:
+        x = blank_w - sd["right"].f2
+        _add_line(msp, x, fy0, x, fy1, "bend")
+
+    # Bend 1 (leg, tight to face) — BA/2 outward from hard corner (face corner)
+    # Hard corner = face perimeter. Bend 1 CL is ba2 outside the face zone.
+    if sd["bottom"].active:
+        y = fy0 - ba2
+        _add_line(msp, fx0, y, fx1, y, "bend")
+    if sd["top"].active:
+        y = fy1 + ba2
+        _add_line(msp, fx0, y, fx1, y, "bend")
+    if sd["left"].active:
+        x = fx0 - ba2
+        _add_line(msp, x, fy0, x, fy1, "bend")
+    if sd["right"].active:
+        x = fx1 + ba2
+        _add_line(msp, x, fy0, x, fy1, "bend")
 
 
 def _fastening_sides(spec, sides):
@@ -434,21 +472,29 @@ def generate_panel_dxf(spec, outdir):
     rules=get_rules(spec); gap=rules["gap"]
     sides=resolve_sides(spec)
     blank_w,blank_h=flat_size(spec)
+    r,k,t = rules["r"],rules["k"],spec.thickness
+    bd_val = _bd(r,k,t)
+    # Hard corners (void inner) sit at ex+BD from blank edge
+    # face_x/face_y are the flange zone edges; hard corners are BD further inboard
     face_x=_side_extra(sides["left"]); face_y=_side_extra(sides["bottom"])
+    hc_x = face_x + bd_val   # hard corner x (void inner corner x)
+    hc_y = face_y + bd_val   # hard corner y
+    face_w = spec.face_width  - 2*bd_val  # hard corner to hard corner width
+    face_h = spec.face_height - 2*bd_val  # hard corner to hard corner height
 
     doc=ezdxf.new(dxfversion="R2010"); doc.units=1; msp=doc.modelspace()
     for name,color in [("cut",1),("holes",2),("fastening",5),("bend",3),("bend_extent",4)]:
         if name not in doc.layers: doc.layers.add(name=name,color=color)
 
-    pts=_blank_outline(blank_w,blank_h,sides)
+    pts=_blank_outline(blank_w,blank_h,sides,bd_val)
     msp.add_lwpolyline(pts,close=True,dxfattribs={"layer":"cut"})
-    _draw_bend_lines(msp,face_x,face_y,spec.face_width,spec.face_height,
-                     blank_w,blank_h,sides,gap)
-    for x,y in _hole_centers(face_x,face_y,spec.face_width,spec.face_height,
+    _draw_bend_lines(msp,hc_x,hc_y,face_w,face_h,
+                     blank_w,blank_h,sides,{"r":rules["r"],"k":rules["k"],"t":spec.thickness})
+    for x,y in _hole_centers(hc_x,hc_y,face_w,face_h,
                               spec.hole_dia,spec.pitch,spec.pattern,
                               spec.stagger_angle,spec.margin):
         msp.add_circle((x,y),spec.hole_dia/2.0,dxfattribs={"layer":"holes"})
-    _draw_fastening_holes(msp,spec,face_x,face_y,sides,blank_w,blank_h)
+    _draw_fastening_holes(msp,spec,hc_x,hc_y,sides,blank_w,blank_h)
 
     os.makedirs(outdir,exist_ok=True)
     doc.saveas(os.path.join(outdir,f"{spec.panel_id}.dxf"))
