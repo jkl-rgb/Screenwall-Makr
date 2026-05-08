@@ -38,9 +38,9 @@ FLANGE_CODES = {"L4S", "J4S", "L2TB", "J2TB", "L2LR", "J2LR", "MIX"}
 @dataclass
 class SideDef:
     active: bool
-    ftype: str    # "L" or "J"
-    f1: float     # flat leg length (bend-deducted)
-    f2: float     # flat return lip length (bend-deducted, J only)
+    ftype: str
+    f1: float
+    f2: float
 
 
 @dataclass
@@ -57,6 +57,7 @@ class PanelSpec:
     pitch: float
     pattern: str
     fastening_pair: str = "none"
+    fastener_dia: float = 0.1875
     material: str = "aluminum"
     alloy: str = "3003"
     k_factor_override: Optional[float] = None
@@ -106,11 +107,9 @@ def parse_csv(path: str) -> list[PanelSpec]:
         reader.fieldnames = [str(h).strip().lower() for h in reader.fieldnames]
         for i, row in enumerate(reader, start=2):
             row = {str(k).strip().lower(): v for k, v in row.items() if k is not None}
-
             panel_id = (row.get("panel_id") or "").strip()
             if not panel_id:
                 raise ValueError(f"Row {i}: missing panel_id")
-
             raw_code = (row.get("flange_code") or row.get("flange_type") or "").strip().upper()
             if raw_code == "L":
                 raw_code = "L4S"
@@ -118,13 +117,10 @@ def parse_csv(path: str) -> list[PanelSpec]:
                 raw_code = "J4S"
             if raw_code not in FLANGE_CODES:
                 raise ValueError(f"Row {i}: flange_code must be one of {FLANGE_CODES}")
-
             pattern = (row.get("pattern") or "").strip().lower()
             if pattern not in {"straight", "staggered"}:
                 raise ValueError(f"Row {i}: pattern must be straight or staggered")
-
             ftype = "J" if raw_code.startswith("J") else "L"
-
             out.append(PanelSpec(
                 panel_id=panel_id,
                 face_width=float(row["width"]),
@@ -138,6 +134,7 @@ def parse_csv(path: str) -> list[PanelSpec]:
                 pitch=float(row["hole_pitch"]),
                 pattern=pattern,
                 fastening_pair=(row.get("fastening_pair") or "none").strip().lower(),
+                fastener_dia=_to_float(row.get("fastener_dia"), 0.1875),
                 material=(row.get("material") or "aluminum").strip().lower(),
                 alloy=(row.get("alloy") or "3003").strip(),
                 k_factor_override=_to_float(row.get("k_factor_override"), None) or None,
@@ -176,12 +173,8 @@ def get_rules(spec: PanelSpec) -> dict:
     }
 
 
-def _setback(r: float, t: float) -> float:
-    return r + t
-
-
 def _flat_leg(nominal: float, r: float, k: float, t: float) -> float:
-    return max(nominal - _setback(r, t), 0.0)
+    return max(nominal - (r + t), 0.0)
 
 
 def resolve_sides(spec: PanelSpec) -> dict[str, SideDef]:
@@ -235,64 +228,98 @@ def flat_size(spec: PanelSpec) -> tuple[float, float]:
     return w, h
 
 
+# ---------------------------------------------------------------------------
+# Blank outline
+#
+# CCW walk: BL -> BR -> TR -> TL
+#
+# Each corner bridges the incoming edge to the outgoing edge.
+# arrive_horiz=True  means we arrive travelling in +x or -x (along bottom/top edge)
+# arrive_horiz=False means we arrive travelling in +y or -y (along left/right edge)
+#
+# The point sequence within each corner must connect the last point of
+# the incoming edge to the first point of the outgoing edge.
+#
+#   BL (0,0):  arrive going UP   on left edge  -> arrive_horiz=False
+#   BR (w,0):  arrive going RIGHT on bottom edge -> arrive_horiz=True
+#   TR (w,h):  arrive going UP   on right edge  -> arrive_horiz=False
+#   TL (0,h):  arrive going LEFT  on top edge   -> arrive_horiz=True
+#
+# horiz_sd = SideDef for the flange on the horizontal (x-direction) side
+# vert_sd  = SideDef for the flange on the vertical   (y-direction) side
+# ---------------------------------------------------------------------------
 def _blank_outline(blank_w, blank_h, sides):
-    """
-    Closed CCW flat blank outline with correct corner geometry per
-    SheetMetalRelief smMakeFace logic.
-
-    Corner rules:
-      Neither active          -> plain right-angle point
-      One active only         -> straight cut flush, no notch
-      Both active, both L     -> square notch f1_h x f1_v
-      Both active, any J      -> square notch (clears legs) + 45deg miter
-                                 across lip zone so return lips fold clean
-    Miter cut: straight line from
-      B = (cx + sx*ex_h,  cy + sy*f2_v)   [on vertical outer blank edge]
-    to
-      C = (cx + sx*f2_h,  cy + sy*ex_v)   [on horizontal outer blank edge]
-    """
     w, h = blank_w, blank_h
 
-    def _corner(h_sd, v_sd, cx, cy):
-        sx = 1.0 if cx == 0.0 else -1.0
-        sy = 1.0 if cy == 0.0 else -1.0
-        ex_h = _side_extra(h_sd)
-        ex_v = _side_extra(v_sd)
+    def _corner(horiz_sd, vert_sd, cx, cy, arrive_horiz):
+        sx = 1.0 if cx == 0.0 else -1.0   # inward x
+        sy = 1.0 if cy == 0.0 else -1.0   # inward y
+        ex = _side_extra(horiz_sd)
+        ey = _side_extra(vert_sd)
 
-        if ex_h == 0 and ex_v == 0:
+        # No flanges on either side
+        if ex == 0 and ey == 0:
             return [(cx, cy)]
-        if ex_h == 0:
-            return [(cx, cy + sy * ex_v), (cx, cy)]
-        if ex_v == 0:
-            return [(cx, cy), (cx + sx * ex_h, cy)]
 
-        f2_h = h_sd.f2 if h_sd.ftype == "J" else 0.0
-        f2_v = v_sd.f2 if v_sd.ftype == "J" else 0.0
+        # Only vertical flange active
+        if ex == 0:
+            if arrive_horiz:
+                return [(cx, cy)]
+            else:
+                return [(cx, cy + sy * ey), (cx, cy)]
 
-        if f2_h == 0 and f2_v == 0:
-            # L + L: plain square notch
-            return [
-                (cx + sx * ex_h, cy),
-                (cx + sx * ex_h, cy + sy * ex_v),
-                (cx,             cy + sy * ex_v),
-            ]
+        # Only horizontal flange active
+        if ey == 0:
+            if arrive_horiz:
+                return [(cx, cy), (cx + sx * ex, cy)]
+            else:
+                return [(cx, cy)]
 
-        # J involved: square notch + miter cut across lip zone
-        # A: arrive on y-parallel blank edge
-        # B: top of miter on x-parallel outer notch edge
-        # C: side of miter on y-parallel outer notch edge
-        # D: depart on x-parallel blank edge
-        A = (cx + sx * ex_h, cy)
-        B = (cx + sx * ex_h, cy + sy * f2_v)
-        C = (cx + sx * f2_h, cy + sy * ex_v)
-        D = (cx,             cy + sy * ex_v)
-        return [A, B, C, D]
+        # Both flanges active - compute notch geometry
+        f2x = horiz_sd.f2 if horiz_sd.ftype == "J" else 0.0
+        f2y = vert_sd.f2  if vert_sd.ftype  == "J" else 0.0
+        has_miter = (f2x > 0 or f2y > 0)
+
+        if not has_miter:
+            # L+L plain square notch
+            # Points: from incoming edge -> inner corner -> to outgoing edge
+            if arrive_horiz:
+                # arrive along x, depart along y
+                return [
+                    (cx + sx * ex, cy),
+                    (cx + sx * ex, cy + sy * ey),
+                    (cx,           cy + sy * ey),
+                ]
+            else:
+                # arrive along y, depart along x
+                return [
+                    (cx,           cy + sy * ey),
+                    (cx + sx * ex, cy + sy * ey),
+                    (cx + sx * ex, cy),
+                ]
+        else:
+            # Miter corner for J
+            # Four points forming: notch-start -> miter-top -> miter-bottom -> notch-end
+            # Miter diagonal goes from (cx+sx*ex, cy+sy*f2y) to (cx+sx*f2x, cy+sy*ey)
+            P_h = (cx + sx * ex,  cy)               # on blank horiz edge
+            P_mt = (cx + sx * ex,  cy + sy * f2y)   # miter top (on outer notch, at lip depth y)
+            P_mb = (cx + sx * f2x, cy + sy * ey)    # miter bot (on outer notch, at lip depth x)
+            P_v  = (cx,            cy + sy * ey)     # on blank vert edge
+
+            if arrive_horiz:
+                # arrive along x -> P_h first, depart along y -> P_v last
+                return [P_h, P_mt, P_mb, P_v]
+            else:
+                # arrive along y -> P_v first, depart along x -> P_h last
+                return [P_v, P_mb, P_mt, P_h]
+
+    sl, sr, sb, st = sides["left"], sides["right"], sides["bottom"], sides["top"]
 
     pts = []
-    pts += _corner(sides["left"],  sides["bottom"], 0.0, 0.0)
-    pts += _corner(sides["right"], sides["bottom"], w,   0.0)
-    pts += _corner(sides["right"], sides["top"],    w,   h)
-    pts += _corner(sides["left"],  sides["top"],    0.0, h)
+    pts += _corner(sb, sl, 0.0, 0.0, arrive_horiz=False)  # BL
+    pts += _corner(sb, sr, w,   0.0, arrive_horiz=True)   # BR
+    pts += _corner(st, sr, w,   h,   arrive_horiz=False)  # TR
+    pts += _corner(st, sl, 0.0, h,   arrive_horiz=True)   # TL
     return pts
 
 
@@ -341,42 +368,76 @@ def _hole_centers(face_x, face_y, face_w, face_h,
     return centers
 
 
-def _select_fastening_holes(edge_centers, pitch):
-    if not edge_centers:
-        return []
-    step = max(1, int(round(12.0 / pitch)))
-    return [edge_centers[i] for i in range(0, len(edge_centers), step)]
-
-
-def _add_slot(msp, cx, cy, length, width, orientation, layer):
-    dx, dy = (width/2, length/2) if orientation == "vertical" else (length/2, width/2)
-    _add_rect(msp, cx-dx, cy-dy, cx+dx, cy+dy, layer)
-
-
 def _draw_bend_lines(msp, face_x, face_y, face_w, face_h,
                      blank_w, blank_h, sides, gap):
     fx0, fy0 = face_x, face_y
     fx1, fy1 = face_x + face_w, face_y + face_h
-
     _add_rect(msp, fx0, fy0, fx1, fy1, "bend")
     if gap > 0:
         _add_rect(msp, fx0+gap, fy0+gap, fx1-gap, fy1-gap, "bend_extent")
-
     sd = sides
     if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
         _add_line(msp, 0, sd["bottom"].f2, blank_w, sd["bottom"].f2, "bend")
     if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
-        y = blank_h - sd["top"].f2
-        _add_line(msp, 0, y, blank_w, y, "bend")
+        _add_line(msp, 0, blank_h - sd["top"].f2, blank_w, blank_h - sd["top"].f2, "bend")
     if sd["left"].active and sd["left"].ftype == "J" and sd["left"].f2 > 0:
         _add_line(msp, sd["left"].f2, 0, sd["left"].f2, blank_h, "bend")
     if sd["right"].active and sd["right"].ftype == "J" and sd["right"].f2 > 0:
-        x = blank_w - sd["right"].f2
-        _add_line(msp, x, 0, x, blank_h, "bend")
+        _add_line(msp, blank_w - sd["right"].f2, 0, blank_w - sd["right"].f2, blank_h, "bend")
 
 
-def _draw_fastening_slots(msp, spec, face_x, face_y, sides):
-    if spec.fastening_pair.strip().lower() in {"", "none"}:
+# ---------------------------------------------------------------------------
+# Fastening holes
+# ---------------------------------------------------------------------------
+def _fastening_sides(spec: PanelSpec, sides: dict) -> list[str]:
+    fp = spec.fastening_pair.strip().lower()
+    if fp in ("", "none"):
+        return []
+    active = [s for s in ("top", "bottom", "left", "right") if sides[s].active]
+    if fp in ("all", "standard"):
+        return active
+    if fp == "tb":
+        return [s for s in ("top", "bottom") if s in active]
+    if fp == "lr":
+        return [s for s in ("left", "right") if s in active]
+    mapping = {"t": "top", "b": "bottom", "l": "left", "r": "right"}
+    name = mapping.get(fp, fp)
+    return [name] if name in active else []
+
+
+def _l_fastening_positions(side_length: float, margin: float = 2.0,
+                            target: float = 12.0) -> list[float]:
+    """Equal-margin positions ~12" o.c. along a side."""
+    span = side_length - 2.0 * margin
+    if span <= 0:
+        return [side_length / 2.0]
+    n_gaps = max(1, round(span / target))
+    spacing = span / n_gaps
+    return [margin + i * spacing for i in range(n_gaps + 1)]
+
+
+def _j_fastening_positions(coords: list[float]) -> list[float]:
+    """
+    Select ~12" o.c. subset from sorted face hole coordinates.
+    Always uses the first available hole as the starting point,
+    then picks the next hole that is >= 11.5" away, and so on.
+    """
+    if not coords:
+        return []
+    holes = sorted(coords)
+    selected = [holes[0]]
+    for h in holes[1:]:
+        if h - selected[-1] >= 11.5:
+            selected.append(h)
+    if holes[-1] not in selected and holes[-1] - selected[-1] > 0.5:
+        selected.append(holes[-1])
+    return selected
+
+
+def _draw_fastening_holes(msp, spec: PanelSpec, face_x, face_y,
+                           sides: dict, blank_w, blank_h):
+    active_sides = _fastening_sides(spec, sides)
+    if not active_sides:
         return
 
     face_holes = _hole_centers(
@@ -384,35 +445,43 @@ def _draw_fastening_slots(msp, spec, face_x, face_y, sides):
         spec.hole_dia, spec.pitch, spec.pattern,
         spec.stagger_angle, spec.margin,
     )
-    radius    = spec.hole_dia / 2.0
-    tolerance = max(0.01, spec.pitch * 0.25)
+    fdia = spec.fastener_dia
+    tol  = max(0.01, spec.pitch * 0.3)
 
-    for side_name, orientation, slot_cx_fn, slot_cy_fn in [
-        ("right",  "vertical",
-         lambda sd: face_x + spec.face_width + sd.f1/2,  lambda sd, cy: cy),
-        ("top",    "horizontal",
-         lambda sd, cx: cx, lambda sd: face_y + spec.face_height + sd.f1/2),
-        ("left",   "vertical",
-         lambda sd: face_x - sd.f1/2,                   lambda sd, cy: cy),
-        ("bottom", "horizontal",
-         lambda sd, cx: cx, lambda sd: face_y - sd.f1/2),
-    ]:
+    for side_name in active_sides:
         sd = sides[side_name]
-        if not sd.active:
-            continue
-        if orientation == "vertical":
-            ex = face_x + spec.face_width - radius - spec.margin
-            cols = sorted([c for c in face_holes if abs(c[0]-ex) <= tolerance], key=lambda c: c[1])
-            chosen = _select_fastening_holes(cols, spec.pitch)
-            for _, cy in chosen:
-                _add_slot(msp, slot_cx_fn(sd), cy, 0.75, 0.25, "vertical", "fastening")
-        else:
-            ey = face_y + spec.face_height - radius - spec.margin
-            rows = sorted([c for c in face_holes if abs(c[1]-ey) <= tolerance], key=lambda c: c[0])
-            chosen = _select_fastening_holes(rows, spec.pitch)
-            for cx, _ in chosen:
-                _add_slot(msp, cx, slot_cy_fn(sd), 0.75, 0.25, "horizontal", "fastening")
-        break
+
+        if side_name in ("bottom", "top"):
+            is_bottom = (side_name == "bottom")
+            if sd.ftype == "J":
+                # Hole centered in lip zone, aligned to face edge-row perforations
+                hole_y = sd.f2 / 2.0 if is_bottom else blank_h - sd.f2 / 2.0
+                edge_y = face_y if is_bottom else face_y + spec.face_height
+                row_xs = [c[0] for c in face_holes if abs(c[1] - edge_y) <= tol]
+                positions_x = _j_fastening_positions(row_xs)
+            else:
+                # L: hole centered in leg, no alignment needed
+                hole_y = (face_y - sd.f1 / 2.0) if is_bottom else (face_y + spec.face_height + sd.f1 / 2.0)
+                raw = _l_fastening_positions(spec.face_width)
+                positions_x = [face_x + p for p in raw]
+
+            for px in positions_x:
+                msp.add_circle((px, hole_y), fdia / 2.0, dxfattribs={"layer": "fastening"})
+
+        else:  # left or right
+            is_left = (side_name == "left")
+            if sd.ftype == "J":
+                hole_x = sd.f2 / 2.0 if is_left else blank_w - sd.f2 / 2.0
+                edge_x = face_x if is_left else face_x + spec.face_width
+                col_ys = [c[1] for c in face_holes if abs(c[0] - edge_x) <= tol]
+                positions_y = _j_fastening_positions(col_ys)
+            else:
+                hole_x = (face_x - sd.f1 / 2.0) if is_left else (face_x + spec.face_width + sd.f1 / 2.0)
+                raw = _l_fastening_positions(spec.face_height)
+                positions_y = [face_y + p for p in raw]
+
+            for py in positions_y:
+                msp.add_circle((hole_x, py), fdia / 2.0, dxfattribs={"layer": "fastening"})
 
 
 def generate_panel_dxf(spec: PanelSpec, outdir: str):
@@ -442,7 +511,7 @@ def generate_panel_dxf(spec: PanelSpec, outdir: str):
                                spec.stagger_angle, spec.margin):
         msp.add_circle((x, y), spec.hole_dia/2.0, dxfattribs={"layer": "holes"})
 
-    _draw_fastening_slots(msp, spec, face_x, face_y, sides)
+    _draw_fastening_holes(msp, spec, face_x, face_y, sides, blank_w, blank_h)
 
     os.makedirs(outdir, exist_ok=True)
     doc.saveas(os.path.join(outdir, f"{spec.panel_id}.dxf"))
