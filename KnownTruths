@@ -1,0 +1,497 @@
+================================================================================
+SCREENWALL MAKR — MASTER KNOWN TRUTHS REFERENCE
+Architectural Cassette Fabrication / Flat Pattern DXF Generator
+Machine: Artform Wall Machine / Ermaksan Speed Bend Pro
+================================================================================
+Last compiled from: 6 source CSVs + verified bend math session
+Code repo: jkl-rgb/Screenwall-Makr
+
+
+================================================================================
+SECTION 1 — CORE BEND MATH FORMULAS
+================================================================================
+
+All formulas are for 90-degree air bending on a press brake.
+
+  OSS / OSB (Outside Setback):
+    OSS = tan(45°) × (R + T)  =  R + T     [for 90° bend, tan(45°)=1]
+    Also written: OSB = R + T
+
+  BA (Bend Allowance):
+    BA = (π/2) × (R + K × T)
+    BA = (Angle × π / 180) × (R + K × T)   [general form]
+
+  BD (Bend Deduction):
+    BD = (2 × OSS) - BA
+    BD = 2 × (R + T) - BA
+
+  BA/2:
+    BA/2 = offset from hard corner to bend centerline
+    BA/2 = (π/4) × (R + K × T)
+
+  Flat zone lengths (J flange, measured to bend centerlines):
+    f2_flat (lip zone)  = nominal_f2 - BD/2     [blank edge → bend2 CL]
+    f1_flat (leg zone)  = nominal_f1 - 3×BD/2   [used for blank sizing only]
+    CL-to-CL leg span   = nominal_f1 - BD        [bend2 CL → bend1 CL]
+
+  Flat zone lengths (L flange):
+    f1_flat             = nominal_f1 - BD/2
+
+NOTE ON REFERENCE POINTS:
+  - Our code measures flat zones to BEND CENTERLINES
+  - Some references (Gemini, shop floor) measure to MATERIAL EDGE
+  - Difference = BA/2 (e.g., 2.084" CL vs 1.9375" material edge for 0.1875" Al)
+  - Both are correct; they describe the same physical geometry
+
+NOTE ON OSS vs BD/2:
+  - OSS = R + T = 0.3125" (for 0.1875" Al, r=0.125")
+  - BD/2 = 0.1657"
+  - OSS ≠ BD/2 — they are different quantities
+  - OSS is used for: corner notch depth, setback from mold line
+  - BD/2 is used for: flat zone deductions from nominal flange depth
+
+
+================================================================================
+SECTION 2 — MATERIAL TABLE (Alloys, Gauges, Radii, K-Factors)
+================================================================================
+
+Machine: Ermaksan Speed Bend Pro (air bending)
+
+Material              | Thickness | Inside Radius | K-Factor | V-Die  | X-Axis Gauge
+----------------------|-----------|---------------|----------|--------|------------------
+3003-H14 Al           | 0.060"    | 0.0625"       | 0.33     | 0.5"   | (Flange) - 0.057"
+3003-H14 Al           | 0.080"    | 0.080"        | 0.35     | 0.625" | (Flange) - 0.076"
+3003-H14 Al           | 0.125"    | 0.125"        | 0.38     | 1.0"   | (Flange) - 0.120"
+3003-H14 Al (Tight)   | 0.1875"   | 0.125"        | 0.33     | 1.5"   | (Flange) - 0.166"
+3003-H14 Al           | 0.250"    | 0.250"        | 0.42     | 2.0"   | (Flange) - 0.235"
+5052-H32 Al           | 0.125"    | 0.125"        | 0.40     | 1.0"   | (Flange) - 0.118"
+5052-H32 Al (Tight)   | 0.1875"   | 0.125"        | 0.37     | 1.5"   | (Flange) - 0.162"
+16GA Steel            | 0.060"    | 0.0625"       | 0.44     | 0.5"   | (Flange) - 0.052"
+14GA Steel            | 0.075"    | 0.075"        | 0.44     | 0.625" | (Flange) - 0.064"
+11GA Steel            | 0.120"    | 0.125"        | 0.45     | 1.0"   | (Flange) - 0.103"
+1/4" Steel            | 0.250"    | 0.250"        | 0.47     | 2.0"   | (Flange) - 0.218"
+
+6061-T6 Al (requires larger IR — 1.5T to 2.5T to prevent cracking):
+6061-T6 Al            | 0.060"    | 0.090" (1.5T) | 0.40     | 0.5"   | (Flange) - 0.051"
+6061-T6 Al            | 0.080"    | 0.125" (1.5T) | 0.41     | 0.625" | (Flange) - 0.063"
+6061-T6 Al            | 0.125"    | 0.250" (2.0T) | 0.41     | 1.0"   | (Flange) - 0.105"
+6061-T6 Al            | 0.1875"   | 0.375" (2.0T) | 0.42     | 1.5"   | (Flange) - 0.147"
+6061-T6 Al            | 0.250"    | 0.500" (2.0T) | 0.42     | 2.0"   | (Flange) - 0.198"
+
+K-FACTOR RULES:
+  - Tight bends (R < T): use K = 0.33
+  - Standard bends (R = T): use K = 0.4469 as safe baseline
+  - Use the table above for machine-specific values
+  - K-factor errors compound across successive bends (J-flange has 2 bends)
+
+CURRENT CODE STATUS:
+  - 3003 and 5052 partially supported (fixed k values, not per-thickness)
+  - Steel and 6061-T6 NOT YET in code — use k_factor_override + bend_radius_override in CSV
+  - PENDING: replace K_FACTORS dict with full lookup table keyed by (alloy, thickness)
+
+
+================================================================================
+SECTION 3 — VERIFIED BEND MATH (0.1875" 3003-H14 Al, r=0.125", k=0.33)
+================================================================================
+
+Reference panel: 36"H × 24"W, J4S, flange1=2.0", flange2=2.25"
+Verified against Fusion 360 factory flat pattern drawing.
+
+  OSS = R + T          = 0.125 + 0.1875 = 0.3125"
+  BA  = (π/2)(R+K×T)  = (π/2)(0.125 + 0.33×0.1875) = 0.2935"  [Fusion: 0.294" ✓]
+  BD  = 2×OSS - BA     = 0.6250 - 0.2935 = 0.3315"
+  BA/2                 = 0.1468"                                 [Fusion: 0.147" ✓]
+
+  f2_flat = 2.25 - BD/2   = 2.25 - 0.1657 = 2.084"             [Fusion: 2.084" ✓]
+  f1_flat = 2.00 - 3×BD/2 = 2.00 - 0.4972 = 1.503"             [for blank sizing]
+  CL-to-CL leg span = 2.00 - BD = 2.00 - 0.3315 = 1.669"       [Fusion: 1.669" ✓]
+
+  ex = f1 + f2 = 1.503 + 2.084 = 3.587" per side                [blank extension]
+  blank_w = 24 + 2×3.587 = 31.174"                              [Fusion: 31.174" ✓]
+  blank_h = 36 + 2×3.587 = 43.174"                              [Fusion: 43.174" ✓]
+
+  Hard corner offset = ex + BD = 3.587 + 0.3315 = 3.918" from blank edge
+  HC-HC width  = 31.174 - 2×3.918 = 23.338"                     [Fusion: 23.36" ✓]
+  HC-HC height = 43.174 - 2×3.918 = 35.338"                     [Fusion: 35.367" ✓]
+
+  LAYOUT FROM BLANK EDGE INWARD:
+  [blank edge] --2.084"-- [bend2 CL] --1.669"-- [bend1 CL] --0.147"-- [HARD CORNER] --face--
+
+  Bend line positions:
+    bend2 CL from blank edge = f2 = 2.084"                      [Fusion: 2.084" ✓]
+    bend1 CL from blank edge = HC - BA/2 = 3.918 - 0.147 = 3.771"
+    bend1 CL from HC         = BA/2 = 0.147"                    [Fusion: 0.147" ✓]
+    bend2 CL from HC         = HC - f2 = 3.918 - 2.084 = 1.834" [Fusion: 1.823" ✓]
+
+  All differences from Fusion < 0.015" — accumulated rounding, within fab tolerance.
+
+  MITER VERTEX (from Shop Summary reference):
+    Known Truths X=1.815", Y=2.084" from theoretical corner origin
+    Our code: X=1.834", Y=2.084" — difference 0.019" (rounding) ✓
+
+  BLANK SIZE FORMULA CROSS-CHECK (Gemini/Shop method):
+    Total out-to-out = face + 2×nominal_f1 + 2×nominal_f2 = 24 + 4 + 4.5 = 32.5"
+    Blank = 32.5 - 4×BD = 32.5 - 4×0.3315 = 31.174" ✓
+
+
+================================================================================
+SECTION 4 — FLAT PATTERN COORDINATE SYSTEM
+================================================================================
+
+DXF ORIGIN CONVENTION (our code):
+  (0, 0) = bottom-left corner of BLANK
+  Y increases upward
+  Hard corners (void inner corners) at (el+BD, eb+BD) where el/eb = f1+f2 per side
+
+KNOWN TRUTHS REFERENCE CONVENTION:
+  (0, 0) = bottom-left corner of FACE (web corner)
+  Flanges extend into negative coordinates
+  Face corner = (0,0), blank extends to (-ex, -ex) at lower-left
+
+CONVERSION:
+  Our blank coord = Known Truths face coord + (ex, ex)
+  These are equivalent; our DXF draws correctly regardless of origin choice.
+
+
+================================================================================
+SECTION 5 — FLAT PATTERN GEOMETRY (20-SIDED OUTLINE FOR J4S)
+================================================================================
+
+The blank outline is a variable-sided polygon. Edge count depends on flange config.
+
+CORNER TYPE DEFINITIONS:
+  Type A (J+J): 4 edges — void_edge + miter + miter + void_edge
+  Type B (L+L): 2 edges — notch_wall + notch_wall (reaches blank edge directly)
+  Type C (J+L): 3 edges — void_edge + miter + notch_wall
+  Type D (J+N): 2 edges — void_edge + miter (one side has no flange)
+  Type E (L+N): 1 edge  — notch_wall only
+  Type F (N+N): 0 edges — face corner only
+
+EDGE COUNTS BY FLANGE CODE:
+  Config        | Corner Type | Corner Edges | Primary Edges | Total
+  --------------|-------------|--------------|---------------|------
+  J4S           | A×4         | 16           | 4             | 20
+  L4S           | B×4         | 8            | 4             | 12
+  J2TB          | D×4         | 8            | 4             | 12
+  L2TB          | E×4         | 4            | 4             | 8
+  J2LR          | D×4         | 8            | 4             | 12
+  L2LR          | E×4         | 4            | 4             | 8
+  MIX J-tb/L-lr | C×4         | 12           | 4             | 16
+
+NOTE: The Known Truths source document listed J2TB/J2LR as ~8. 
+The correct count is 12 — the source was approximate.
+
+VOID EDGE LENGTH RULE:
+  void_edge_length = f1 + BD
+  This ensures the miter starts exactly at the bend2 centerline (not within the f1 leg zone)
+  For L flanges: f2=0, so void_end reaches blank edge directly (no miter)
+
+J4S 20-POINT OUTLINE (blank coords, CCW):
+   1: (fx0-vl,  fy0)       BL close miter end / left primary end
+   2: (fx0,     fy0)       BL hard corner (void inner)
+   3: (fx0,     fy0-vb)    BL void edge down
+   4: (fx0+mb,  0)         BL miter end → bottom primary start
+   5: (fx1-mb,  0)         bottom primary end
+   6: (fx1,     fy0-vb)    BR miter end
+   7: (fx1,     fy0)       BR hard corner
+   8: (fx1+vr,  fy0)       BR void edge right
+   9: (bw,      fy0+mr)    BR miter end → right primary start
+  10: (bw,      fy1-mr)    right primary end
+  11: (fx1+vr,  fy1)       TR miter end
+  12: (fx1,     fy1)       TR hard corner
+  13: (fx1,     fy1+vt)    TR void edge up
+  14: (fx1-mt,  bh)        TR miter end → top primary start
+  15: (fx0+mt,  bh)        top primary end
+  16: (fx0,     fy1+vt)    TL miter end
+  17: (fx0,     fy1)       TL hard corner
+  18: (fx0-vl,  fy1)       TL void edge left
+  19: (0,       fy1-ml)    TL miter end → left primary start
+  20: (0,       fy0+ml)    left primary end
+
+Where:
+  fx0 = el+BD, fy0 = eb+BD   (BL hard corner)
+  fx1 = bw-er-BD, fy1 = bh-et-BD   (TR hard corner)
+  vb/vt/vl/vr = f1+BD (void edge lengths per side)
+  mb/mt/ml/mr = f2 (miter depths per side, 0 for L flanges)
+
+MITER GEOMETRY:
+  Miter length = √2 × f2 = √2 × 2.084 = 2.948" ≈ shop 2.907" ✓
+  Miter angle  = 45°
+  Miter starts at bend2 centerline level (not at blank edge)
+  Miter ends on blank outer edge
+  Purpose: allows flange2 (lip) to fold back without adjacent lips colliding
+
+
+================================================================================
+SECTION 6 — CORNER RELIEFS
+================================================================================
+
+FACE CORNER RELIEF (L-Intersection — where two flange1 legs meet):
+  Purpose: eliminate puckering on thin gauges, prevent crushed corners on thick
+  Geometry: square notch
+  Depth = OSS = R + T
+
+  Gauge   | R      | OSS    | Square Notch Size
+  --------|--------|--------|------------------
+  0.0625" | 0.062" | 0.125" | 0.125" × 0.125"
+  0.125"  | 0.125" | 0.250" | 0.250" × 0.250"
+  0.1875" | 0.125" | 0.313" | 0.313" × 0.313"
+  0.250"  | 0.125" | 0.375" | 0.375" × 0.375"
+
+  Geometry Engine (face-relative coords, face corner = 0,0):
+    Point A: (-OSS, -OSS)
+    Point B: (-OSS,  0)
+    Point C: (0,     0)    ← apply micro-fillet 0.015" here
+    Point D: (0,    -OSS)
+    Close loop back to A
+
+  Drafting rule: cut lines must NOT meet at a sharp V at the bend line.
+  They must terminate at the OSS coordinate, creating a square cutout.
+  When 4 panels meet, the four OSS notches combine to form a perfect square reveal.
+
+  Tolerance buffer: add buf=0.010" to OSS to prevent metal contact with machine drift.
+
+BACK J-RELIEF (J-Intersection — where two flange2 lips meet at the miter):
+  Purpose: prevent flaring and micro-cracking where return legs meet
+  Geometry: circle (keyhole relief)
+  Diameter = 2 × T
+
+  Gauge   | Circle Diameter
+  --------|----------------
+  0.0625" | 0.125"
+  0.125"  | 0.250"
+  0.1875" | 0.375"
+  0.250"  | 0.500"
+
+  Center point: intersection of the two secondary bend lines (bend2 CLs)
+  Miter cuts for J-legs terminate at circumference of circle, not at sharp point
+  This radius relief allows metal to stretch independently during second bend
+
+CURRENT CODE STATUS:
+  Corner reliefs NOT YET implemented in screenwall_generator.py
+  PENDING: add square notch at face corners + circle relief at J intersections
+
+
+================================================================================
+SECTION 7 — FLANGE TYPES AND CODES
+================================================================================
+
+FLANGE CODES:
+  L4S   — L flange all 4 sides, same depth
+  J4S   — J flange all 4 sides, same depth
+  L2TB  — L flange top + bottom only
+  J2TB  — J flange top + bottom only
+  L2LR  — L flange left + right only
+  J2LR  — J flange left + right only
+  MIX   — per-side type and depth via CSV columns
+
+Single letters L and J are normalized to L4S and J4S.
+
+J FLANGE PHYSICAL DESCRIPTION:
+  Face flat → flange1 (leg) folds 90° AWAY from face → flange2 (lip) folds 90° BACK toward face
+  Creates a J-channel profile when viewed in cross-section
+  Target depth (face outside to inside face): flange1_depth (e.g., 2.0")
+  Target lip width: flange2_depth (e.g., 2.25")
+  Bend 1 = leg fold (tight to face), Bend 2 = lip return (the J return)
+
+L FLANGE PHYSICAL DESCRIPTION:
+  Face flat → flange1 (leg) folds 90° away from face
+  Single bend, creates L-angle profile
+  No lip return, no second bend
+
+CORNER GEOMETRY BY FLANGE COMBINATION:
+  J+J corner: void edges + miters on both flange ends
+    Miter prevents adjacent lips from colliding when J returns fold back
+  L+L corner: square notch only, no miter needed
+    No lip return = no collision risk
+  J+L corner: miter on J end only, square notch on L end
+  Active+Inactive: square end (flange just terminates at face edge)
+
+
+================================================================================
+SECTION 8 — COORDINATE GEOMETRY FORMULAS
+================================================================================
+
+FLAT PATTERN ORIGIN:
+  Classic sheet metal: 0,0 at lower-left of flat sheet
+  Software automation: 0,0 at lower-left of face/web (simplifies flange calculations)
+  Our DXF: 0,0 at lower-left of blank (flanges extend inward from blank edge)
+
+KEY VARIABLES:
+  W, H     — finished outside width and height of panel face
+  F1, F2   — flange depths (F1 = leg, F2 = lip/return)
+  T        — material thickness
+  R        — inside bend radius
+  K        — K-factor
+  BA       — bend allowance = (π/2)(R + K×T)
+  OSS      — outside setback = R + T
+  BD       — bend deduction = 2×OSS - BA
+
+VERTEX INTERSECTION POINTS (corner notch locations):
+  L4S:  L_total = F1 - OSS + BA  (from web edge)
+  J4S:  L_total = (F1 - OSS) + (F2 - OSS) + (2 × BA)
+  MIX:  X_vert = (F_side - OSS) + BA
+        Y_vert = (F_top - OSS) + (F_ret - OSS) + (2 × BA)
+
+NOTCH INTERSECTION COORDINATE (P_notch, face-relative):
+  X: Px = -(Fs - OSS + BA)    [side flange]
+  Y: Py = -(Ft - OSS + BA)    [top flange, L]
+  Y (J-flange): Py = -[(F_leg1 - OSS) + (F_leg2 - OSS) + (2 × BA)]
+
+BOOLEAN CORNER LOGIC:
+  Miter corner (aesthetic/seamless):
+    Condition: Corner_Type == "Miter"
+    Px = Py = (F - OSS + BA) - (Gap/2)
+    Miter_Gap typically 0.015" – 0.030"
+    Result: 45° diagonal cut line
+
+  Overlap corner (structural/interlocking):
+    One flange keeps full developed length (Base)
+    Overlapping flange shortened by T + clearance
+    P_overlap = (F - OSS + BA) - (T + Clearance)
+
+PANEL TYPE CORNER SUMMARY:
+  L4S: equal 45° cuts on both intersecting flanges
+  J4S: both leg and return mitered at 45°; requires step notch (return shorter than leg)
+  MIX (J/L): L-flange typically overlaps J-flange to simplify return bend
+
+BEND RELIEF REQUIREMENT:
+  Minimum relief diameter = 2 × (R + T) = 2 × OSS
+  Must be placed at exact intersection of bend lines
+  Prevents puckering where metal is pulled in two directions
+
+
+================================================================================
+SECTION 9 — SOFTWARE RULES AND SHOP NOTES
+================================================================================
+
+SHOP SUMMARY — ERMAKSAN SPEED BEND PRO:
+
+  Core Formula (air bending):
+    BD  = (2 × OSB) - BA
+    OSB = tan(Angle/2) × (R + T)
+    BA  = (Angle × π/180) × (R + K × T)
+
+  J-Flange Reference Values (0.1875" Al, R=0.125"):
+    First bend line (J-to-L): 2.084" from blank edge
+    Second bend offset (L-to-Face): 1.668" from first line
+    Miter vertex: X=1.815" / Y=2.084" from theoretical corner origin
+    Anti-collision: shorten miter vertex ~1/32" for 0-relief corners to prevent binding
+
+  Software Rules (Fusion 360):
+    Dynamic Radius: always set IR to match actual punch radius used in shop
+    K-Factor: tight bends (R<T) use 0.33; standard (R=T) use 0.4469 baseline
+    Successive bends: K-factor errors compound — test J-flange returns carefully
+
+  Geometry Engine Rules:
+    Face corner notch depth = OSS (self-scaling with thickness)
+    Back J-relief radius = T (self-scaling)
+    Tolerance buffer: add 0.010" to OSS for machine drift protection
+
+
+SHOP NOTES — 6061-T6 ALUMINUM (use with caution):
+  NEVER attempt tight bend (0.125" IR) on 6061-T6 thicker than 0.060"
+  For 0.1875" thickness: 0.125" IR will almost certainly crack without annealing
+  Minimum bend radius: 1.5T to 2.5T depending on temper
+  Springback: significantly higher than 3003 — over-bend aggressively
+    Use Data-M Laser Angle Tracking if available on machine
+  Grain direction: cracking risk increases 30% when bending parallel to grain
+  Recommended: always test on scrap of same lot before production run
+
+SHOP NOTES — GENERAL:
+  Anti-collision relief: shorten miter vertex ~1/32" for 0-relief J corners
+  Square notch on face + circle relief on back = HD Clad system standard
+  Square notch acts as architectural reveal feature when 4 panels meet
+  Always verify flat pattern on first article before production run
+
+
+================================================================================
+SECTION 10 — CONFLICTS AND GAPS: KNOWN TRUTHS vs CURRENT CODE
+================================================================================
+
+CONFIRMED MATCHES (no action needed):
+  ✓ Blank size formula — matches Fusion 360 exactly (31.174" × 43.174")
+  ✓ f2_flat = nominal - BD/2 = 2.084" — exact match
+  ✓ BA/2 = 0.147" — matches Fusion bend zone measurement
+  ✓ bend2 CL from blank edge = 2.084" — exact match
+  ✓ J+J corner miter geometry — matches factory drawing
+  ✓ 20-edge outline for J4S — verified against user coordinates
+  ✓ BA formula — matches Fusion formula exactly
+
+MINOR DIFFERENCES (within tolerance, no action needed):
+  ~ HC-HC: code=23.338" vs Fusion=23.36" (0.022" diff = rounding)
+  ~ bend2 CL from HC: code=1.834" vs shop=1.815-1.823" (0.011-0.019" = rounding)
+  ~ miter vertex X: code=1.834" vs shop=1.815" (0.019" = rounding)
+  ~ J2TB/J2LR edge count: known truths doc said ~8, actual=12 (doc was approximate)
+
+GAPS — PENDING IMPLEMENTATION:
+  1. Material lookup table incomplete
+     Current: K_FACTORS = {3003: 0.33, 5052: 0.38} — does not vary by thickness
+     Needed: full table keyed by (alloy, thickness) from Section 2 above
+     Also needed: steel alloys (16GA, 14GA, 11GA, 1/4"), 6061-T6
+     Workaround: use k_factor_override + bend_radius_override columns in CSV
+
+  2. Corner reliefs not implemented
+     Current: no relief geometry drawn
+     Needed: square notch at each active corner (depth = OSS = R+T, on cut layer)
+     Needed: circle relief at J back miter intersections (dia = 2T, on cut layer)
+
+  3. Origin convention difference (documentation only, no code change needed)
+     Known Truths: 0,0 at face corner
+     Our DXF: 0,0 at blank corner (flanges extend inward)
+     Both are correct — just different reference frames
+
+CONFLICTS (requires resolution):
+  None confirmed. All apparent formula conflicts resolve to different reference
+  points (material edge vs bend CL, blank origin vs face origin) that describe
+  the same physical geometry.
+
+
+================================================================================
+SECTION 11 — DXF LAYER DEFINITIONS
+================================================================================
+
+  Layer       | Color | Content
+  ------------|-------|--------------------------------------------------------
+  cut         | 1     | Blank outline polygon (variable sides per flange config)
+  bend        | 3     | Bend 1 and Bend 2 centerlines (individual line segments)
+  holes       | 2     | Perforation circles
+  fastening   | 5     | Fastener holes
+
+  No bend_extent layer — removed.
+  Bend lines drawn as individual segments spanning face zone only (not full blank width).
+  Bend 1 CL: BA/2 outward from each hard corner edge
+  Bend 2 CL: f2 inward from blank edge (J flanges only)
+
+
+================================================================================
+SECTION 12 — CSV INPUT FORMAT
+================================================================================
+
+REQUIRED COLUMNS:
+  panel_id, width, height, thickness, flange_code, flange1_depth,
+  hole_diameter, hole_pitch, pattern
+
+OPTIONAL COLUMNS:
+  flange2_depth, fastening_pair, fastener_dia, alloy, material,
+  k_factor_override, bend_radius_override, stagger_angle, margin
+
+MIX COLUMNS (required when flange_code=MIX):
+  top_type, top_f1, top_f2
+  bottom_type, bottom_f1, bottom_f2
+  left_type, left_f1, left_f2
+  right_type, right_f1, right_f2
+
+THICKNESS INPUT:
+  Accepts decimal inches: 0.0625, 0.080, 0.125, 0.1875, 0.250
+  Accepts gauge strings: "16 ga", "14 ga", "11 ga"
+
+PATTERN VALUES: "straight" or "staggered"
+FASTENING_PAIR VALUES: all, standard, tb, lr, t, b, l, r, none
+FLANGE_CODE VALUES: L4S, J4S, L2TB, J2TB, L2LR, J2LR, MIX
+  (single "L" or "J" normalized to L4S / J4S)
+
+
+================================================================================
+END OF KNOWN TRUTHS DOCUMENT
+================================================================================
