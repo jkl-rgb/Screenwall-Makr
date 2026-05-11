@@ -1,3 +1,4 @@
+import base64
 import io
 import tempfile
 import zipfile
@@ -9,6 +10,10 @@ from screenwall_generator import INSTALL_SLOT_EXTRA, parse_csv, generate_panel_d
 
 st.set_page_config(page_title="Screenwall Makr", layout="wide")
 LOGO_PATH = Path(__file__).parent / "assets" / "artform_logo.png"
+
+
+def _inline_image_base64(path: Path) -> str:
+    return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
 def _zip_dxfs(folder: str) -> bytes:
@@ -121,9 +126,12 @@ st.markdown("""
         color: #1d1d1f;
     }
     .block-container {
-        padding-top: 1.6rem;
+        padding-top: 2.25rem;
         padding-bottom: 2.5rem;
         max-width: 1200px;
+    }
+    .artform-header {
+        padding-top: 0.35rem;
     }
     .artform-kicker {
         font-size: 0.82rem;
@@ -154,6 +162,14 @@ st.markdown("""
         background: linear-gradient(90deg, rgba(29,29,31,0.14), rgba(29,29,31,0.05));
         margin: 1.35rem 0 1.8rem 0;
     }
+    .artform-logo {
+        display: block;
+        width: 75%;
+        max-width: 165px;
+        min-width: 120px;
+        margin: 0.85rem auto 0;
+        height: auto;
+    }
     [data-testid="stExpander"] {
         border: 1px solid #e5e5e7;
         border-radius: 18px;
@@ -181,23 +197,30 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-header_left, header_right = st.columns([4.3, 1.2], vertical_alignment="top")
+logo_b64 = _inline_image_base64(LOGO_PATH) if LOGO_PATH.exists() else None
+
+header_left, header_right = st.columns([4.8, 0.8], vertical_alignment="top")
 with header_left:
     st.markdown(
         """
-        <div class="artform-kicker">Artform</div>
-        <h1 class="artform-title">Screenwall Makr</h1>
-        <div class="artform-subtitle">
-            Flat pattern DXF generator for perforated screenwall panels,
-            with bend-aware flange geometry, install-slot placement, and
-            fabrication-ready CSV import controls.
+        <div class="artform-header">
+            <div class="artform-kicker">Artform</div>
+            <h1 class="artform-title">Screenwall Makr</h1>
+            <div class="artform-subtitle">
+                Flat pattern DXF generator for perforated screenwall panels,
+                with bend-aware flange geometry, install-slot placement, and
+                fabrication-ready CSV import controls.
+            </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 with header_right:
-    if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), use_container_width=True)
+    if logo_b64:
+        st.markdown(
+            f'<img class="artform-logo" src="data:image/png;base64,{logo_b64}" alt="Artform logo" />',
+            unsafe_allow_html=True,
+        )
 
 st.markdown('<div class="artform-rule"></div>', unsafe_allow_html=True)
 
