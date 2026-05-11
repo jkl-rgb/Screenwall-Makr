@@ -563,21 +563,44 @@ def _hole_centers(face_x, face_y, face_w, face_h,
     return centers
 
 
+def _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
+    """Bend-1 centerline position for each active side.
+
+    J flanges keep the verified hard-corner minus BA/2 placement. L flanges use
+    their flat leg length directly from the blank edge, which matches the
+    outside-dimension convention used for the single-bend flange depth.
+    """
+    pos = {}
+    for name, sd in sides.items():
+        if not sd.active:
+            continue
+        if name == "bottom":
+            pos[name] = sd.f1 if sd.ftype == "L" else (fy0 - ba2)
+        elif name == "top":
+            pos[name] = (blank_h - sd.f1) if sd.ftype == "L" else (fy1 + ba2)
+        elif name == "left":
+            pos[name] = sd.f1 if sd.ftype == "L" else (fx0 - ba2)
+        elif name == "right":
+            pos[name] = (blank_w - sd.f1) if sd.ftype == "L" else (fx1 + ba2)
+    return pos
+
+
 def _draw_bend_lines(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
     """
     Bend 1 CL: BA/2 outward from hard corner (creates leg depth)
     Bend 2 CL: f2 from blank edge (J return lip)
     """
     sd = sides
+    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
     # Bend 1 CL - BA/2 outside each hard corner edge
     if sd["bottom"].active:
-        _add_line(msp, fx0, fy0-ba2, fx1, fy0-ba2, "bend")
+        _add_line(msp, fx0, bend1["bottom"], fx1, bend1["bottom"], "bend")
     if sd["top"].active:
-        _add_line(msp, fx0, fy1+ba2, fx1, fy1+ba2, "bend")
+        _add_line(msp, fx0, bend1["top"], fx1, bend1["top"], "bend")
     if sd["left"].active:
-        _add_line(msp, fx0-ba2, fy0, fx0-ba2, fy1, "bend")
+        _add_line(msp, bend1["left"], fy0, bend1["left"], fy1, "bend")
     if sd["right"].active:
-        _add_line(msp, fx1+ba2, fy0, fx1+ba2, fy1, "bend")
+        _add_line(msp, bend1["right"], fy0, bend1["right"], fy1, "bend")
 
     # Bend 2 CL - f2 from blank edge, J sides only
     if sd["bottom"].active and sd["bottom"].ftype=="J" and sd["bottom"].f2>0:
@@ -655,9 +678,10 @@ def _add_slot(msp, cx, cy, width, length, orientation, layer):
 
 
 def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
-                          sides, blank_w, blank_h):
+                          sides, blank_w, blank_h, ba2):
     active=_fastening_sides(spec,sides)
     if not active: return
+    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
     face_holes=_hole_centers(fx0,fy0,face_w,face_h,
                              spec.hole_dia,spec.pitch,spec.pattern,
                              spec.stagger_angle,spec.margin)
@@ -671,7 +695,7 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
                 hy=sd.f2/2.0 if is_b else blank_h-sd.f2/2.0
                 xs=_aligned_positions([c[0] for c in face_holes])
             else:
-                hy=(fy0-sd.f1/2.0) if is_b else (fy1+sd.f1/2.0)
+                hy=(bend1[sn]/2.0) if is_b else ((blank_h + bend1[sn]) / 2.0)
                 xs=[fx0+p for p in _l_positions(face_w)]
             for px in xs:
                 _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
@@ -681,7 +705,7 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
                 hx=sd.f2/2.0 if is_l else blank_w-sd.f2/2.0
                 ys=_aligned_positions([c[1] for c in face_holes])
             else:
-                hx=(fx0-sd.f1/2.0) if is_l else (fx1+sd.f1/2.0)
+                hx=(bend1[sn]/2.0) if is_l else ((blank_w + bend1[sn]) / 2.0)
                 ys=[fy0+p for p in _l_positions(face_h)]
             for py in ys:
                 _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
@@ -708,26 +732,26 @@ def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t,
 
     oss        = r + t
     notch_size = oss + RELIEF_BUFFER
+    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
 
     sl = sides["left"];  sr = sides["right"]
     sb = sides["bottom"]; st_ = sides["top"]
 
-    # (hsd, vsd, hc_x, hc_y, vox, voy)
-    # vox/voy = unit direction from hc INTO the void; face direction is the negation.
+    # (horizontal side, vertical side, horiz bend1 key, vert bend1 key, ox, oy)
     corners = (
-        (sb,  sl, fx0, fy0, -1, -1),  # BL
-        (sb,  sr, fx1, fy0, +1, -1),  # BR
-        (st_, sr, fx1, fy1, +1, +1),  # TR
-        (st_, sl, fx0, fy1, -1, +1),  # TL
+        (sb,  sl, "bottom", "left",  -1, -1),  # BL
+        (sb,  sr, "bottom", "right", +1, -1),  # BR
+        (st_, sr, "top",    "right", +1, +1),  # TR
+        (st_, sl, "top",    "left",  -1, +1),  # TL
     )
 
-    for hsd, vsd, hc_x, hc_y, vox, voy in corners:
+    for hsd, vsd, h_key, v_key, ox, oy in corners:
         if not (hsd.active and vsd.active):
             continue
 
         # Square bend relief — centered at bend1 CL intersection.
-        cx = hc_x + vox * ba2
-        cy = hc_y + voy * ba2
+        cx = bend1[v_key]
+        cy = bend1[h_key]
         half = notch_size / 2.0
         notch = [
             (cx - half, cy - half),
@@ -739,8 +763,8 @@ def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t,
 
         # Back J-relief — only at J+J corners, centered at bend2 CL intersection
         if hsd.ftype == "J" and vsd.ftype == "J" and hsd.f2 > 0 and vsd.f2 > 0:
-            cx = vsd.f2 if vox < 0 else (blank_w - vsd.f2)
-            cy = hsd.f2 if voy < 0 else (blank_h - hsd.f2)
+            cx = vsd.f2 if ox < 0 else (blank_w - vsd.f2)
+            cy = hsd.f2 if oy < 0 else (blank_h - hsd.f2)
             msp.add_circle((cx, cy), t, dxfattribs={"layer": "cut"})
 
 
@@ -778,7 +802,7 @@ def generate_panel_dxf(spec, outdir):
                               spec.stagger_angle,spec.margin):
         msp.add_circle((x,y),spec.hole_dia/2.0,dxfattribs={"layer":"holes"})
 
-    _draw_fastening_slots(msp,spec,fx0,fy0,fx1,fy1,face_w,face_h,sides,bw,bh)
+    _draw_fastening_slots(msp,spec,fx0,fy0,fx1,fy1,face_w,face_h,sides,bw,bh,ba2)
 
     os.makedirs(outdir,exist_ok=True)
     doc.saveas(os.path.join(outdir,f"{spec.panel_id}.dxf"))
