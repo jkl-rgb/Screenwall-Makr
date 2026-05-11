@@ -85,9 +85,17 @@ K-FACTOR RULES:
   - K-factor errors compound across successive bends (J-flange has 2 bends)
 
 CURRENT CODE STATUS:
-  - 3003 and 5052 partially supported (fixed k values, not per-thickness)
-  - Steel and 6061-T6 NOT YET in code — use k_factor_override + bend_radius_override in CSV
-  - PENDING: replace K_FACTORS dict with full lookup table keyed by (alloy, thickness)
+  - MATERIAL_TABLE is implemented in code and keyed by (alloy_normalized, thickness)
+  - Supported lookup families: 3003, 5052, 6061, steel
+  - Overrides still available: k_factor_override, bend_radius_override
+  - Fallback when no exact/nearest table row exists: r = thickness, k = 0.33
+  - Gauge decoding is material-aware:
+      aluminum/default: 16 ga=0.0625, 14 ga=0.0800, 11 ga=0.1250
+      steel:            16 ga=0.0600, 14 ga=0.0750, 11 ga=0.1200
+  - IMPORTANT CSV rule for steel: material=steel is enough to drive both
+    gauge decoding and bend-rule lookup to the steel values
+  - alloy may still be set to "steel" (or a shop-specific steel descriptor)
+    for clarity, but it is no longer required just to hit the steel table
 
 
 ================================================================================
@@ -154,37 +162,38 @@ CONVERSION:
 
 
 ================================================================================
-SECTION 5 — FLAT PATTERN GEOMETRY (20-SIDED OUTLINE FOR J4S)
+SECTION 5 — FLAT PATTERN GEOMETRY (VARIABLE-SIDED OUTLINE; J4S = 20 SIDES)
 ================================================================================
 
 The blank outline is a variable-sided polygon. Edge count depends on flange config.
 
-CORNER TYPE DEFINITIONS:
+CORNER TYPE DEFINITIONS (current code):
   Type A (J+J): 4 edges — void_edge + miter + miter + void_edge
-  Type B (L+L): 2 edges — notch_wall + notch_wall (reaches blank edge directly)
-  Type C (J+L): 3 edges — void_edge + miter + notch_wall
-  Type D (J+N): 2 edges — void_edge + miter (one side has no flange)
-  Type E (L+N): 1 edge  — notch_wall only
-  Type F (N+N): 0 edges — face corner only
+  Type B (any active corner without J+J): 2 edges — square corner treatment
+           Covers L+L, J+L, and L+J. A J flange only receives a miter when it
+           meets another J flange at the same corner.
+  Type C (active+inactive): 1 edge  — square flange end
+  Type D (inactive+inactive): 0 edges — face corner only
 
 EDGE COUNTS BY FLANGE CODE:
   Config        | Corner Type | Corner Edges | Primary Edges | Total
   --------------|-------------|--------------|---------------|------
   J4S           | A×4         | 16           | 4             | 20
   L4S           | B×4         | 8            | 4             | 12
-  J2TB          | D×4         | 8            | 4             | 12
-  L2TB          | E×4         | 4            | 4             | 8
-  J2LR          | D×4         | 8            | 4             | 12
-  L2LR          | E×4         | 4            | 4             | 8
-  MIX J-tb/L-lr | C×4         | 12           | 4             | 16
-
-NOTE: The Known Truths source document listed J2TB/J2LR as ~8. 
-The correct count is 12 — the source was approximate.
+  J2TB          | C×4         | 4            | 4             | 8
+  L2TB          | C×4         | 4            | 4             | 8
+  J2LR          | C×4         | 4            | 4             | 8
+  L2LR          | C×4         | 4            | 4             | 8
+  MIX J-tb/L-lr | B×4         | 8            | 4             | 12
 
 VOID EDGE LENGTH RULE:
-  void_edge_length = f1 + BD
-  This ensures the miter starts exactly at the bend2 centerline (not within the f1 leg zone)
-  For L flanges: f2=0, so void_end reaches blank edge directly (no miter)
+  J side at J+J corner:
+    void_edge_length = f1 + BD
+    This ensures the miter starts exactly at the bend2 centerline.
+
+  Any side without a miter at that corner:
+    void_edge_length = f1 + f2 + BD
+    The path runs straight to the blank edge (square end).
 
 J4S 20-POINT OUTLINE (blank coords, CCW):
    1: (fx0-vl,  fy0)       BL close miter end / left primary end
@@ -215,11 +224,15 @@ Where:
   mb/mt/ml/mr = f2 (miter depths per side, 0 for L flanges)
 
 MITER GEOMETRY:
-  Miter length = √2 × f2 = √2 × 2.084 = 2.948" ≈ shop 2.907" ✓
-  Miter angle  = 45°
+  Applied ONLY at J+J corners
+  Nominal miter length = √2 × f2 = √2 × 2.084 = 2.948" ≈ shop 2.907" ✓
+  Nominal miter angle  = 45°
   Miter starts at bend2 centerline level (not at blank edge)
   Miter ends on blank outer edge
   Purpose: allows flange2 (lip) to fold back without adjacent lips colliding
+  gap_override (optional): opens the J+J miter apex by shifting the two
+    void endpoints away from the hard corner by gap/2 each
+  Default code behavior: gap = 0.0; back J-relief circle provides the relief
 
 
 ================================================================================
@@ -268,8 +281,13 @@ BACK J-RELIEF (J-Intersection — where two flange2 lips meet at the miter):
   This radius relief allows metal to stretch independently during second bend
 
 CURRENT CODE STATUS:
-  Corner reliefs NOT YET implemented in screenwall_generator.py
-  PENDING: add square notch at face corners + circle relief at J intersections
+  Corner reliefs ARE implemented in screenwall_generator.py:
+  - Square face notch drawn as a separate closed cut polyline at every active corner
+  - Notch size = OSS + 0.010 buffer
+  - Back J-relief drawn as a cut-layer circle at each J+J corner
+  - Circle diameter = 2 × T, centered at the bend2 CL intersection
+  - Micro-fillet at the notch inside corner is NOT implemented; the current
+    code draws a square notch only
 
 
 ================================================================================
@@ -304,7 +322,9 @@ CORNER GEOMETRY BY FLANGE COMBINATION:
     Miter prevents adjacent lips from colliding when J returns fold back
   L+L corner: square notch only, no miter needed
     No lip return = no collision risk
-  J+L corner: miter on J end only, square notch on L end
+  J+L or L+J corner: no miter; both sides terminate square at the corner
+    The J flange is treated like an L at that corner because there is no
+    opposing J return to collide with
   Active+Inactive: square end (flange just terminates at face edge)
 
 
@@ -340,25 +360,29 @@ NOTCH INTERSECTION COORDINATE (P_notch, face-relative):
 
 BOOLEAN CORNER LOGIC:
   Miter corner (aesthetic/seamless):
-    Condition: Corner_Type == "Miter"
-    Px = Py = (F - OSS + BA) - (Gap/2)
-    Miter_Gap typically 0.015" – 0.030"
-    Result: 45° diagonal cut line
+    Condition: both adjacent flanges are J
+    Miter_Gap typically 0.015" – 0.030" when explicitly used
+    Current code default: gap = 0.0
+    Result: nominal 45° diagonal cut line; if gap > 0 the apex opens slightly
+    because the hard-corner-side endpoints move by gap/2 while the blank-edge
+    endpoints stay anchored
 
   Overlap corner (structural/interlocking):
-    One flange keeps full developed length (Base)
-    Overlapping flange shortened by T + clearance
-    P_overlap = (F - OSS + BA) - (T + Clearance)
+    Not implemented as a distinct overlap mode in current code
+    Non-J+J corners terminate square instead of using a miter
 
 PANEL TYPE CORNER SUMMARY:
-  L4S: equal 45° cuts on both intersecting flanges
-  J4S: both leg and return mitered at 45°; requires step notch (return shorter than leg)
-  MIX (J/L): L-flange typically overlaps J-flange to simplify return bend
+  L4S: square notch at every corner, no miter
+  J4S: both adjacent J sides mitered at 45° nominal; optional gap_override
+       opens the apex slightly
+  MIX (J/L): no miter; both sides terminate square at the corner
+  2-side configs (J2TB/J2LR/L2TB/L2LR): square flange ends at active/inactive corners
 
 BEND RELIEF REQUIREMENT:
-  Minimum relief diameter = 2 × (R + T) = 2 × OSS
-  Must be placed at exact intersection of bend lines
-  Prevents puckering where metal is pulled in two directions
+  Face notch depth/size = OSS + 0.010 buffer
+  Back J-relief diameter = 2 × T
+  Back J-relief center = exact intersection of the two bend2 centerlines
+  Back J-relief only appears at J+J corners
 
 
 ================================================================================
@@ -406,7 +430,7 @@ SHOP NOTES — GENERAL:
 
 
 ================================================================================
-SECTION 10 — CONFLICTS AND GAPS: KNOWN TRUTHS vs CURRENT CODE
+SECTION 10 — STATUS CHECK: KNOWN TRUTHS vs CURRENT CODE
 ================================================================================
 
 CONFIRMED MATCHES (no action needed):
@@ -422,24 +446,33 @@ MINOR DIFFERENCES (within tolerance, no action needed):
   ~ HC-HC: code=23.338" vs Fusion=23.36" (0.022" diff = rounding)
   ~ bend2 CL from HC: code=1.834" vs shop=1.815-1.823" (0.011-0.019" = rounding)
   ~ miter vertex X: code=1.834" vs shop=1.815" (0.019" = rounding)
-  ~ J2TB/J2LR edge count: known truths doc said ~8, actual=12 (doc was approximate)
+  ~ miter angle stays exactly 45° only when gap_override = 0;
+    if gap_override > 0 the apex opens slightly by design
 
-GAPS — PENDING IMPLEMENTATION:
-  1. Material lookup table incomplete
-     Current: K_FACTORS = {3003: 0.33, 5052: 0.38} — does not vary by thickness
-     Needed: full table keyed by (alloy, thickness) from Section 2 above
-     Also needed: steel alloys (16GA, 14GA, 11GA, 1/4"), 6061-T6
-     Workaround: use k_factor_override + bend_radius_override columns in CSV
+CURRENT CODE STATUS:
+  1. Material lookup table implemented
+     - 3003, 5052, 6061, and steel all supported in MATERIAL_TABLE
+     - nearest-thickness fallback still applies when no exact row exists
 
-  2. Corner reliefs not implemented
-     Current: no relief geometry drawn
-     Needed: square notch at each active corner (depth = OSS = R+T, on cut layer)
-     Needed: circle relief at J back miter intersections (dia = 2T, on cut layer)
+  2. Corner reliefs implemented
+     - square face notch on cut layer
+     - circular back J-relief on cut layer at J+J corners only
 
-  3. Origin convention difference (documentation only, no code change needed)
+  3. Install slots implemented
+     - layer: fastening
+     - J slots align to face perforation rows/columns
+     - L slots use 2" end offsets with floating spacing near 12" o.c.
+       and never above 13"
+
+  4. Origin convention difference (documentation only, no code change needed)
      Known Truths: 0,0 at face corner
      Our DXF: 0,0 at blank corner (flanges extend inward)
      Both are correct — just different reference frames
+
+REMAINING ENGINEERING GAPS:
+  1. Nesting remains unimplemented (stub functions only)
+  2. Install slot sizing now supports explicit slot_length in CSV; if left blank
+     the default remains fastener_dia + 0.50"
 
 CONFLICTS (requires resolution):
   None confirmed. All apparent formula conflicts resolve to different reference
@@ -456,7 +489,7 @@ SECTION 11 — DXF LAYER DEFINITIONS
   cut         | 1     | Blank outline polygon (variable sides per flange config)
   bend        | 3     | Bend 1 and Bend 2 centerlines (individual line segments)
   holes       | 2     | Perforation circles
-  fastening   | 5     | Fastener holes
+  fastening   | 5     | Install slots
 
   No bend_extent layer — removed.
   Bend lines drawn as individual segments spanning face zone only (not full blank width).
@@ -470,11 +503,18 @@ SECTION 12 — CSV INPUT FORMAT
 
 REQUIRED COLUMNS:
   panel_id, width, height, thickness, flange_code, flange1_depth,
-  hole_diameter, hole_pitch, pattern
+  hole_diameter, hole_pitch, pattern, fastening_pair
 
 OPTIONAL COLUMNS:
-  flange2_depth, fastening_pair, fastener_dia, alloy, material,
-  k_factor_override, bend_radius_override, stagger_angle, margin
+  flange2_depth, fastener_dia, slot_length, alloy, material,
+  k_factor_override, bend_radius_override, gap_override,
+  stagger_angle, margin
+
+REQUIRED USER-CHOICE FIELD:
+  fastening_pair
+    Use tb / lr / t / b / l / r / none to explicitly choose which flanges
+    receive install slots. Typical practice is the long sides only.
+    Legacy all / standard values may still appear in older files.
 
 MIX COLUMNS (required when flange_code=MIX):
   top_type, top_f1, top_f2
@@ -483,11 +523,25 @@ MIX COLUMNS (required when flange_code=MIX):
   right_type, right_f1, right_f2
 
 THICKNESS INPUT:
-  Accepts decimal inches: 0.0625, 0.080, 0.125, 0.1875, 0.250
+  Accepts decimal inches:
+    steel examples: 0.060, 0.075, 0.120, 0.250
+    aluminum examples: 0.0625, 0.080, 0.125, 0.1875, 0.250
   Accepts gauge strings: "16 ga", "14 ga", "11 ga"
+    material/alloy containing "steel" → 0.060 / 0.075 / 0.120
+    otherwise → 0.0625 / 0.080 / 0.125
 
 PATTERN VALUES: "straight" or "staggered"
-FASTENING_PAIR VALUES: all, standard, tb, lr, t, b, l, r, none
+FASTENING_PAIR VALUES: tb, lr, t, b, l, r, none
+  Legacy values: all, standard
+FASTENER_DIA:
+  Width of the install slot
+  Current code slot length = fastener_dia + 0.50"
+  Accepted import aliases: slot_width, fastener_slot_width, install_slot_width
+SLOT_LENGTH:
+  Optional total install slot length
+  Must be >= fastener_dia
+  Leave blank to use the default: fastener_dia + 0.50"
+  Accepted import aliases: fastener_slot_length, install_slot_length
 FLANGE_CODE VALUES: L4S, J4S, L2TB, J2TB, L2LR, J2LR, MIX
   (single "L" or "J" normalized to L4S / J4S)
 

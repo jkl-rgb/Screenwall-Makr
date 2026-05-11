@@ -5,9 +5,10 @@ from pathlib import Path
 
 import streamlit as st
 
-from screenwall_generator import parse_csv, generate_panel_dxf
+from screenwall_generator import INSTALL_SLOT_EXTRA, parse_csv, generate_panel_dxf
 
 st.set_page_config(page_title="Screenwall Makr", layout="wide")
+LOGO_PATH = Path(__file__).parent / "assets" / "artform_logo.png"
 
 
 def _zip_dxfs(folder: str) -> bytes:
@@ -26,6 +27,7 @@ STANDARD_HEADERS = [
     "panel_id", "width", "height", "thickness", "material", "alloy",
     "flange_code", "flange1_depth", "flange2_depth",
     "hole_diameter", "hole_pitch", "pattern", "fastening_pair",
+    "fastener_dia", "slot_length",
     "stagger_angle", "margin",
 ]
 
@@ -39,7 +41,7 @@ MIX_EXTRA_HEADERS = [
 STANDARD_EXAMPLE = [
     "example_L4S", "36", "24", "0.1875", "aluminum", "3003",
     "L4S", "2.0", "",
-    "0.75", "1.25", "staggered", "standard",
+    "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
     "", "", "", "", "", "", "", "", "", "", "", "",
 ]
@@ -47,7 +49,7 @@ STANDARD_EXAMPLE = [
 MIX_EXAMPLE = [
     "example_MIX", "36", "24", "0.1875", "aluminum", "5052",
     "MIX", "", "",
-    "0.75", "1.25", "staggered", "standard",
+    "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
     "J", "2.0", "2.25",   # top
     "J", "2.0", "2.25",   # bottom
@@ -55,17 +57,149 @@ MIX_EXAMPLE = [
     "L", "2.0", "",       # right
 ]
 
+# Steel example: thickness given as a gauge string ("14 ga"). material=steel is
+# now enough to drive BOTH gauge decoding and bend-rule lookup to the steel row.
+# alloy may still be set to "steel" (or a shop-specific steel descriptor) for
+# clarity in exported summaries and CSV review.
+STEEL_EXAMPLE = [
+    "example_STEEL", "36", "24", "14 ga", "steel", "steel",
+    "L4S", "2.0", "",
+    "0.75", "1.25", "staggered", "tb", "0.1875", "0.75",
+    "60.0", "1.25",
+    "", "", "", "", "", "", "", "", "", "", "", "",
+]
+
 ALL_HEADERS = STANDARD_HEADERS + MIX_EXTRA_HEADERS
 
-template_csv = ",".join(ALL_HEADERS) + "\n"
+# Header row contains both the column names and a leading instructions banner
+# (as a CSV comment line) so the file is self-documenting when opened in Excel.
+TEMPLATE_INSTRUCTIONS = [
+    "# Screenwall Makr CSV — fill one row per panel. Delete example rows before upload.",
+    "# THICKNESS + MATERIAL/ALLOY:",
+    "#   - Decimal thickness (e.g. 0.1875) works for any material; alloy still drives k/r.",
+    "#   - Gauge strings ('16 ga' / '14 ga' / '11 ga') decode differently per material:",
+    "#       aluminum (default): 16=0.0625, 14=0.0800, 11=0.1250",
+    "#       steel             : 16=0.0600, 14=0.0750, 11=0.1200  (Section 2 / shop table)",
+    "#   - For STEEL rows: material=steel is enough to drive steel gauge decoding",
+    "#     and steel bend-rule lookup. alloy may be 'steel' or a steel descriptor",
+    "#     for clarity, but it no longer has to be 'steel' just to hit the table.",
+    "#   - For ALUMINUM rows: alloy = 3003 / 5052 / 6061 (per MATERIAL_TABLE in code).",
+    "#   - 6061-T6 requires larger bend radii; verify with shop before production.",
+    "# COLUMN NOTES:",
+    "#   flange_code = L4S / J4S / L2TB / J2TB / L2LR / J2LR / MIX",
+    "#   J flanges require flange2_depth (return lip). L flanges leave it blank.",
+    "#   MIX uses per-side columns (top_type/top_f1/top_f2, etc).",
+    "#   fastening_pair is REQUIRED: tb / lr / t / b / l / r / none",
+    "#     (legacy all/standard still parse, but explicit side selection is preferred).",
+    "#     Typical practice: place install slots on the long sides only.",
+    "#   fastener_dia = install slot WIDTH.",
+    "#     Accepted width aliases on import: slot_width, fastener_slot_width, install_slot_width",
+    "#   slot_length (optional) = total install slot length.",
+    "#     Accepted length aliases on import: fastener_slot_length, install_slot_length",
+    "#     Leave blank to use the default: fastener_dia + 0.50\".",
+    "#   gap_override (optional, advanced): miter anti-collision gap at J+J corners.",
+    "#     leave blank for default 0; set ~0.03125 (1/32\") to widen the miter apex.",
+    "# All dimensions in inches.",
+]
+
+template_csv = "\n".join(TEMPLATE_INSTRUCTIONS) + "\n"
+template_csv += ",".join(ALL_HEADERS) + "\n"
 template_csv += ",".join(STANDARD_EXAMPLE) + "\n"
 template_csv += ",".join(MIX_EXAMPLE) + "\n"
+template_csv += ",".join(STEEL_EXAMPLE) + "\n"
 
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
-st.title("Screenwall Makr")
-st.caption("Flat pattern DXF generator for perforated aluminum screen panels.")
+st.markdown("""
+<style>
+    html, body, [class*="css"]  {
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+    .stApp {
+        background: #ffffff;
+        color: #1d1d1f;
+    }
+    .block-container {
+        padding-top: 1.6rem;
+        padding-bottom: 2.5rem;
+        max-width: 1200px;
+    }
+    .artform-kicker {
+        font-size: 0.82rem;
+        font-weight: 500;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #6e6e73;
+        margin-bottom: 0.65rem;
+    }
+    .artform-title {
+        font-size: clamp(2.3rem, 5vw, 4rem);
+        line-height: 1.02;
+        font-weight: 300;
+        letter-spacing: -0.03em;
+        color: #1d1d1f;
+        margin: 0;
+    }
+    .artform-subtitle {
+        max-width: 42rem;
+        margin-top: 0.95rem;
+        font-size: 1.05rem;
+        line-height: 1.6;
+        font-weight: 300;
+        color: #6e6e73;
+    }
+    .artform-rule {
+        height: 1px;
+        background: linear-gradient(90deg, rgba(29,29,31,0.14), rgba(29,29,31,0.05));
+        margin: 1.35rem 0 1.8rem 0;
+    }
+    [data-testid="stExpander"] {
+        border: 1px solid #e5e5e7;
+        border-radius: 18px;
+        background: #fbfbfd;
+        overflow: hidden;
+    }
+    [data-testid="stFileUploader"] {
+        border-radius: 18px;
+        border: 1px dashed #c7c7cc;
+        background: #fbfbfd;
+    }
+    div.stButton > button,
+    div.stDownloadButton > button {
+        border-radius: 999px;
+        border: 1px solid #d2d2d7;
+        background: #ffffff;
+        color: #1d1d1f;
+        font-weight: 500;
+    }
+    div.stButton > button:hover,
+    div.stDownloadButton > button:hover {
+        border-color: #1d1d1f;
+        color: #1d1d1f;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+header_left, header_right = st.columns([4.3, 1.2], vertical_alignment="top")
+with header_left:
+    st.markdown(
+        """
+        <div class="artform-kicker">Artform</div>
+        <h1 class="artform-title">Screenwall Makr</h1>
+        <div class="artform-subtitle">
+            Flat pattern DXF generator for perforated screenwall panels,
+            with bend-aware flange geometry, install-slot placement, and
+            fabrication-ready CSV import controls.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with header_right:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), use_container_width=True)
+
+st.markdown('<div class="artform-rule"></div>', unsafe_allow_html=True)
 
 with st.expander("Flange code reference", expanded=False):
     st.markdown("""
@@ -82,9 +216,40 @@ with st.expander("Flange code reference", expanded=False):
 **Notes**
 - `flange1_depth` = nominal leg depth (outside mold line). Used for all non-MIX codes.
 - `flange2_depth` = nominal return lip depth for J codes. Leave blank for L codes.
-- `material` = aluminum (default). `alloy` = 3003 (default) or 5052.
+- `material` defaults to `aluminum`; `alloy` defaults to `3003`.
+- `fastening_pair` is required in the CSV. Use `tb`, `lr`, `t`, `b`, `l`, `r`, or `none`.
+  Typical practice is to place install slots on the long sides only.
+- `fastener_dia` is the install slot width.
+- Accepted width aliases on import: `slot_width`, `fastener_slot_width`, `install_slot_width`.
+- `slot_length` is optional total install slot length. Leave it blank to use the default
+  `fastener_dia + 0.50"`.
+- Accepted length aliases on import: `fastener_slot_length`, `install_slot_length`.
 - For `MIX`: set `top_type` / `bottom_type` / `left_type` / `right_type` to `L` or `J`.
   Set `*_f1` (leg depth) and `*_f2` (return lip, J only). A side with `*_f1 = 0` is a straight cut.
+""")
+
+with st.expander("Material & gauge rules (READ FIRST)", expanded=False):
+    st.markdown("""
+**Thickness column** accepts either a decimal (e.g. `0.1875`) or a gauge string (`16 ga`, `14 ga`, `11 ga`).
+
+Gauge strings decode **differently per material** to match the shop bend table (Known Truths Section 2):
+
+| Gauge | Aluminum | Steel |
+|------|---------|-------|
+| `16 ga` | 0.0625″ | 0.0600″ |
+| `14 ga` | 0.0800″ | 0.0750″ |
+| `11 ga` | 0.1250″ | 0.1200″ |
+
+**For STEEL panels:**
+- `material = steel` drives both gauge decoding and the bend-table lookup.
+- `alloy` may still be `steel` (or a steel descriptor) for clarity, but it no longer
+  has to be `steel` just to get steel k-factor / radius values.
+
+**For ALUMINUM panels:**
+- `material = aluminum`
+- `alloy = 3003` (default), `5052`, or `6061` (6061 needs larger bend radii — verify with shop).
+
+**Power-user override:** if you want to force specific values regardless of material, set `k_factor_override` and `bend_radius_override` columns and they take precedence over the table.
 """)
 
 st.download_button(
@@ -108,6 +273,7 @@ if uploaded is not None:
             # Show parsed summary
             summary = []
             for p in panels:
+                slot_length = p.slot_length if p.slot_length is not None else (p.fastener_dia + INSTALL_SLOT_EXTRA)
                 summary.append({
                     "ID": p.panel_id,
                     "W×H": f"{p.face_width}″ × {p.face_height}″",
@@ -117,6 +283,8 @@ if uploaded is not None:
                     "Hole Ø": f"{p.hole_dia}″",
                     "Pitch": f"{p.pitch}″",
                     "Pattern": p.pattern,
+                    "Install Sides": p.fastening_pair,
+                    "Slot W×L": f"{p.fastener_dia}″ × {slot_length}″",
                 })
             st.dataframe(summary, use_container_width=True)
 

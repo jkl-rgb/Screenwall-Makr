@@ -12,7 +12,7 @@ Updated:  Reflects current code state including variable-edge outline
 1. OVERVIEW
 ================================================================================
 
-screenwall_generator.py generates flat pattern DXF files for perforated aluminum
+screenwall_generator.py generates flat pattern DXF files for perforated metal
 screenwall panels with sheet metal J and L flanges. The Streamlit app accepts a
 CSV of panel specs and returns a ZIP of DXF files, one per panel.
 
@@ -27,21 +27,24 @@ CSV parser:   parse_csv(path: str) -> list[PanelSpec]
 
 Machine: Artform Wall Machine / Ermaksan Speed Bend Pro (air bending, 90-degree)
 
-Supported alloys (current code):
-  3003-H14 Al  — k=0.33 (all gauges, fixed — PENDING per-thickness table)
-  5052-H32 Al  — k=0.38 (all gauges, fixed — PENDING per-thickness table)
-
-Supported alloys (pending material table implementation):
-  3003-H14 Al  — k varies 0.33-0.42 by gauge and bend condition
-  5052-H32 Al  — k=0.37 tight, k=0.40 standard
+Supported lookup families (current code via MATERIAL_TABLE):
+  3003-H14 Al  — per-thickness r/k table
+  5052-H32 Al  — per-thickness r/k table
   Steel        — 16GA/14GA/11GA/1/4", k=0.44-0.47
-  6061-T6 Al   — k=0.40-0.42, requires larger IR (1.5T-2.0T), use with caution
+  6061-T6 Al   — per-thickness r/k table, larger IR required (1.5T-2.0T)
 
-Bend radius rule (current code):
-  r = 2/3 × t   (factory rule, verified: 0.1875 × 0.667 = 0.125" ✓)
-  NOTE: This is only accurate for 0.1875" tight bend.
-  The full material table specifies r = t for most standard gauges.
-  PENDING: replace with lookup table from Known Truths Section 2.
+Bend rule source:
+  get_rules(spec) looks up (alloy_normalized, round(thickness, 4)) in MATERIAL_TABLE.
+  If there is no exact row for that alloy family, it picks the nearest thickness.
+  If there is no family match at all, fallback is r = thickness and k = 0.33.
+
+Gauge decoding:
+  Gauge strings are material-aware.
+  Aluminum/default rows: 16 ga = 0.0625, 14 ga = 0.0800, 11 ga = 0.1250
+  Steel rows:            16 ga = 0.0600, 14 ga = 0.0750, 11 ga = 0.1200
+  material=steel is enough to drive both gauge decoding and bend-rule lookup
+  to the steel table. alloy may still be "steel" (or a steel descriptor) for
+  clarity, but it is no longer required just to hit the steel values.
 
 Overrides available per panel in CSV:
   k_factor_override, bend_radius_override
@@ -110,31 +113,36 @@ flange configuration at each of the 4 corners.
 
 CORNER TYPES:
   Type A (J+J): 4 edges — void_edge, miter, miter, void_edge
-  Type B (L+L): 2 edges — notch_wall, notch_wall (reach blank edge directly)
-  Type C (J+L): 3 edges — void_edge, miter, notch_wall
-  Type D (J+N): 2 edges — void_edge, miter (inactive side = square face end)
-  Type E (L+N): 1 edge  — notch_wall only
-  Type F (N+N): 0 edges — point only
+  Type B (active corner without J+J): 2 edges — square corner treatment
+          Covers L+L, J+L, and L+J. A J side only gets a miter when it meets
+          another J side at that corner.
+  Type C (active+inactive): 1 edge  — square flange end
+  Type D (inactive+inactive): 0 edges — point only
 
 EDGE COUNTS BY FLANGE CODE:
   J4S           4 A-corners × 4 + 4 primary = 20 edges
   L4S           4 B-corners × 2 + 4 primary = 12 edges
-  J2TB          4 D-corners × 2 + 4 primary = 12 edges
-  L2TB          4 E-corners × 1 + 4 primary =  8 edges
-  J2LR          4 D-corners × 2 + 4 primary = 12 edges
-  L2LR          4 E-corners × 1 + 4 primary =  8 edges
-  MIX J-tb/L-lr 4 C-corners × 3 + 4 primary = 16 edges
+  J2TB          4 C-corners × 1 + 4 primary =  8 edges
+  L2TB          4 C-corners × 1 + 4 primary =  8 edges
+  J2LR          4 C-corners × 1 + 4 primary =  8 edges
+  L2LR          4 C-corners × 1 + 4 primary =  8 edges
+  MIX J-tb/L-lr 4 B-corners × 2 + 4 primary = 12 edges
 
 KEY GEOMETRY RULES:
-  void_edge_length = f1 + BD
-    This ensures the miter starts EXACTLY at the bend2 centerline.
-    Prevents miter from cutting into the f1 leg zone.
+  J side at J+J corner:
+    void_edge_length = f1 + BD
+    This ensures the miter starts exactly at the bend2 centerline.
 
-  For L flanges: f2=0, so void_end reaches blank edge directly (no miter step).
+  Any side without a miter at that corner:
+    void_edge_length = f1 + f2 + BD
+    The path runs straight to the blank edge (square end).
 
-  Miter: 45° diagonal, length = √2 × f2 = √2 × 2.084 = 2.948" ✓
+  Miter only exists at J+J corners.
+  Nominal miter: 45° diagonal, length = √2 × f2 = √2 × 2.084 = 2.948" ✓
   Miter starts at bend2 CL level, ends on blank outer edge.
   Purpose: allows flange2 (lip) to fold back without adjacent lips colliding.
+  gap_override opens the J+J miter apex by shifting the hard-corner-side
+  endpoints away from hc by gap/2 each; blank-edge endpoints stay anchored.
 
 J4S REFERENCE OUTLINE (20 points, CCW, blank coords with 0,0 at BL blank corner):
    1: (fx0-vl,  fy0)       BL close miter end / left primary end
@@ -175,7 +183,7 @@ Where:
   cut         1      Blank outline polygon (variable sides per flange config)
   bend        3      Bend 1 and Bend 2 centerlines (individual line segments)
   holes       2      Perforation circles
-  fastening   5      Fastener holes
+  fastening   5      Install slots
 
 No bend_extent layer (removed).
 
@@ -202,8 +210,12 @@ PanelSpec fields:
   hole_dia           float  Perforation diameter
   pitch              float  Hole center-to-center spacing
   pattern            str    straight or staggered
-  fastening_pair     str    all/standard/tb/lr/t/b/l/r/none
-  fastener_dia       float  Fastener hole diameter (default 0.1875")
+  fastening_pair     str    explicit install-slot sides: tb/lr/t/b/l/r/none
+                             (legacy all/standard still parse)
+  fastener_dia       float  Install slot width (default 0.1875");
+                             slot length = fastener_dia + 0.50"
+  slot_length        float  Optional total install slot length;
+                             must be >= fastener_dia
   material           str    aluminum or steel
   alloy              str    3003 / 5052 / 6061 / steel
   k_factor_override  float  Optional per-panel K-factor override
@@ -243,8 +255,9 @@ Single letters L and J are normalized to L4S and J4S.
 
   get_rules(spec)
     Returns {r, k} — bend radius and K-factor for this spec
-    r = 2/3 × t (current rule, pending full material table)
-    k = K_FACTORS.get(alloy, K_DEFAULT)
+    Looks up (alloy_normalized, round(thickness, 4)) in MATERIAL_TABLE
+    Falls back to the nearest thickness within the same alloy family
+    Final fallback when no family exists: r = thickness, k = 0.33
 
   _bd(r, k, t)          Full bend deduction for 90-degree bend
   _ba_half(r, k, t)     BA/2 = bend CL offset from hard corner
@@ -267,9 +280,9 @@ Single letters L and J are normalized to L4S and J4S.
                 stagger_angle, margin)
     Returns list of (x, y) perforation centers
 
-  _draw_fastening_holes(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
-                         sides, blank_w, blank_h)
-    Draws fastening holes on fastening layer
+  _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
+                        sides, blank_w, blank_h)
+    Draws install slots on fastening layer
 
   generate_panel_dxf(spec, outdir)
     Main entry point. Creates DXF and saves to outdir/panel_id.dxf
@@ -277,7 +290,9 @@ Single letters L and J are normalized to L4S and J4S.
   parse_csv(path)
     Parses CSV file, returns list[PanelSpec]
     Normalizes headers (lowercase, strip whitespace)
-    Supports gauge strings: "16 ga"=0.0625, "14 ga"=0.0800, "11 ga"=0.1250
+    Gauge strings: steel rows use Section 2 decimals ("16 ga"=0.0600, "14 ga"=0.0750,
+    "11 ga"=0.1200). Aluminum (default material) uses nominal sheet decimals
+    ("16 ga"=0.0625, "14 ga"=0.0800, "11 ga"=0.1250).
 
   nest_panels(panels, sw, sh)   Stub — returns [] (nesting not implemented)
   write_nesting_dxf(sheets, outdir)  Stub — returns None
@@ -288,19 +303,36 @@ Single letters L and J are normalized to L4S and J4S.
 ================================================================================
 
 Required: panel_id, width, height, thickness, flange_code, flange1_depth,
-          hole_diameter, hole_pitch, pattern
+          hole_diameter, hole_pitch, pattern, fastening_pair
 
-Optional: flange2_depth, fastening_pair, fastener_dia, alloy, material,
+Optional: flange2_depth, fastener_dia, slot_length, alloy, material,
           k_factor_override, bend_radius_override, gap_override,
           stagger_angle, margin
+
+Required user-choice field: fastening_pair
+  Use tb / lr / t / b / l / r / none to explicitly choose which flanges
+  receive install slots. Typical practice is the long sides only.
+  Legacy all / standard still parse but are not preferred.
 
 MIX columns: top_type, top_f1, top_f2, bottom_type, bottom_f1, bottom_f2,
              left_type, left_f1, left_f2, right_type, right_f1, right_f2
 
-Thickness: decimal inches (0.0625, 0.080, 0.125, 0.1875, 0.250)
-           or gauge string ("16 ga", "14 ga", "11 ga")
+Thickness: decimal inches (0.060, 0.075, 0.120 for sheet steel per Section 2;
+           0.0625, 0.080, 0.125, 0.1875, 0.250 typical aluminum)
+           or gauge string ("16 ga", "14 ga", "11 ga"). Gauge decoding uses steel
+           decimals when `material` or `alloy` contains "steel"; otherwise aluminum
+           nominal decimals (16 ga→0.0625", etc.).
 Pattern: straight or staggered
-Fastening_pair: all, standard, tb, lr, t, b, l, r, none
+Fastening_pair: tb, lr, t, b, l, r, none
+                (legacy all / standard still parse but are not preferred)
+Fastener_dia: install slot width
+              current code slot length = fastener_dia + 0.50"
+              accepted import aliases:
+              slot_width, fastener_slot_width, install_slot_width
+Slot_length: optional total install slot length
+             must be >= fastener_dia
+             accepted import aliases:
+             fastener_slot_length, install_slot_length
 Flange_code: L4S, J4S, L2TB, J2TB, L2LR, J2LR, MIX (or single L/J)
 
 
@@ -318,22 +350,27 @@ margin clearance on all sides.
 
 
 ================================================================================
-11. FASTENING HOLES
+11. INSTALL SLOTS
 ================================================================================
 
-J flanges: holes in lip zone (f2 area), centered at f2/2 from blank edge.
-  Positions aligned to face perforation grid rows/columns at ~12" o.c.
-  starting from first available perforation position.
+J flanges: slots in lip zone (f2 area), centered at f2/2 from blank edge.
+  Slot centers align with the primary face perforation rows/columns.
+  Slot orientation is parallel to the side.
 
-L flanges: holes in leg zone (f1 area), centered at f1/2 from hard corner.
-  2" margins at each end, equal spacing at ~12" o.c.
+L flanges: slots in leg zone (f1 area), centered at f1/2 from the face edge.
+  First and last slot are 2" from the flange ends.
+  Intermediate spacing floats as close to 12" o.c. as possible,
+  but never exceeds 13".
+  Slot orientation is parallel to the side.
 
 fastening_pair values:
-  all / standard  all active sides
   tb              top + bottom only
   lr              left + right only
   t / b / l / r   single side
-  none            no fastening holes
+  none            no install slots
+
+Legacy values:
+  all / standard  all active sides
 
 
 ================================================================================
@@ -375,28 +412,20 @@ Panel: 36"H × 24"W, J4S, flange1=2.0", flange2=2.25", t=0.1875", 3003
 All diffs = accumulated floating-point rounding, within fabrication tolerance.
 
 Outline edge counts (all verified, DXFs generate clean):
-  J4S=20, L4S=12, J2TB=12, L2TB=8, J2LR=12, L2LR=8, MIX J-tb/L-lr=16
+  J4S=20, L4S=12, J2TB=8, L2TB=8, J2LR=8, L2LR=8, MIX J-tb/L-lr=12
 
 
 ================================================================================
-14. KNOWN GAPS — PENDING IMPLEMENTATION
+14. REMAINING GAPS
 ================================================================================
 
-1. Material lookup table
-   Current: K_FACTORS = {3003: 0.33, 5052: 0.38}, r = 2/3×t for all
-   Needed:  Full table keyed by (alloy, thickness) per Known Truths Section 2
-   Also:    Steel alloys, 6061-T6
-   Workaround: k_factor_override + bend_radius_override in CSV
-
-2. Corner reliefs
-   Current: not implemented
-   Needed:  Square notch at active face corners (depth = OSS = R+T, cut layer)
-            Circle keyhole at J back miter intersections (dia = 2T, cut layer)
-   Reference: Known Truths Section 6
-
-3. Nesting
+1. Nesting
    Current: nest_panels() and write_nesting_dxf() are stubs
    Needed:  sheet-size-aware panel nesting algorithm
+
+2. Install slot sizing
+   Current: slot width = fastener_dia
+            slot length = slot_length if provided else fastener_dia + 0.50"
 
 
 ================================================================================

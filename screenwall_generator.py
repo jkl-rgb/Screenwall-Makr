@@ -52,8 +52,19 @@ MATERIAL_TABLE = {
 K_DEFAULT          = 0.33
 BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
 
-GAUGE_MAP    = {"16 ga": 0.0625, "14 ga": 0.0800, "11 ga": 0.1250}
+# Section 6 / Section 9 corner-relief constants
+RELIEF_BUFFER     = 0.010  # tolerance buffer added to OSS face notch (machine-drift guard)
+MITER_GAP_DEFAULT = 0.0    # Section 9: 0 with back J-relief circle, ~1/32" without
+                           # Use spec.gap_override to set explicitly (typical 0.015"–0.030")
+INSTALL_SLOT_EXTRA = 0.50  # slot length = fastener_dia + 0.50"
+
+# Gauge strings → decimal thickness (inches). Steel matches MATERIAL_TABLE /
+# Known Truths Section 2 (16ga 0.060", 14ga 0.075", 11ga 0.120"). Aluminum keeps
+# common nominal sheet decimals that align with table keys (0.0625 / 0.080 / 0.125).
+GAUGE_MAP_STEEL    = {"16 ga": 0.0600, "14 ga": 0.0750, "11 ga": 0.1200}
+GAUGE_MAP_ALUMINUM = {"16 ga": 0.0625, "14 ga": 0.0800, "11 ga": 0.1250}
 FLANGE_CODES = {"L4S", "J4S", "L2TB", "J2TB", "L2LR", "J2LR", "MIX"}
+FASTENING_PAIR_VALUES = {"all", "standard", "tb", "lr", "t", "b", "l", "r", "none"}
 
 
 @dataclass
@@ -78,7 +89,8 @@ class PanelSpec:
     pitch: float
     pattern: str
     fastening_pair: str = "none"
-    fastener_dia: float = 0.1875
+    fastener_dia: float = 0.1875  # install slot width
+    slot_length: Optional[float] = None
     material: str = "aluminum"
     alloy: str = "3003"
     k_factor_override: Optional[float] = None
@@ -101,65 +113,137 @@ def _to_float(v, default=0.0):
         return default
 
 
-def _thickness_to_float(v):
+def _first_present(row, *keys):
+    """Return the first non-empty CSV value among the provided aliases."""
+    for key in keys:
+        value = row.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _rule_family(material: str, alloy: str) -> str:
+    """Resolve the material family used for gauge decoding and bend lookup.
+
+    material=steel takes precedence so steel rows do not need alloy=steel just
+    to hit the steel bend table. Otherwise fall back to the normalized alloy.
+    """
+    if "steel" in (material or "").strip().lower():
+        return "steel"
+    return _normalize_alloy(alloy or "")
+
+
+def _thickness_to_float(v, material: str = "aluminum", alloy: str = "3003"):
     raw = str(v).strip().lower()
-    return GAUGE_MAP.get(raw, float(raw))
+    if _rule_family(material, alloy) == "steel":
+        if raw in GAUGE_MAP_STEEL:
+            return GAUGE_MAP_STEEL[raw]
+    else:
+        if raw in GAUGE_MAP_ALUMINUM:
+            return GAUGE_MAP_ALUMINUM[raw]
+    return float(raw)
 
 
 def parse_csv(path):
+    """Parse a panel-spec CSV.
+
+    The downloaded template embeds human-readable instruction lines that begin
+    with '#'. Those lines are stripped before csv.DictReader sees them, so the
+    template is self-documenting in Excel without breaking upload.
+    """
     out = []
     with open(path, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None:
-            raise ValueError("CSV missing header row.")
-        reader.fieldnames = [str(h).strip().lower() for h in reader.fieldnames]
-        for i, row in enumerate(reader, start=2):
-            row = {str(k).strip().lower(): v for k, v in row.items() if k is not None}
-            panel_id = (row.get("panel_id") or "").strip()
-            if not panel_id:
-                raise ValueError(f"Row {i}: missing panel_id")
-            raw_code = (row.get("flange_code") or row.get("flange_type") or "").strip().upper()
-            if raw_code == "L": raw_code = "L4S"
-            elif raw_code == "J": raw_code = "J4S"
-            if raw_code not in FLANGE_CODES:
-                raise ValueError(f"Row {i}: flange_code must be one of {FLANGE_CODES}")
-            pattern = (row.get("pattern") or "").strip().lower()
-            if pattern not in {"straight", "staggered"}:
-                raise ValueError(f"Row {i}: pattern must be straight or staggered")
-            ftype = "J" if raw_code.startswith("J") else "L"
-            out.append(PanelSpec(
-                panel_id=panel_id,
-                face_width=float(row["width"]),
-                face_height=float(row["height"]),
-                thickness=_thickness_to_float(row["thickness"]),
-                flange_code=raw_code, flange_type=ftype,
-                flange1_depth=_to_float(row.get("flange1_depth"), 0.0),
-                flange2_depth=_to_float(row.get("flange2_depth"), None) or None,
-                hole_dia=float(row["hole_diameter"]),
-                pitch=float(row["hole_pitch"]),
-                pattern=pattern,
-                fastening_pair=(row.get("fastening_pair") or "none").strip().lower(),
-                fastener_dia=_to_float(row.get("fastener_dia"), 0.1875),
-                material=(row.get("material") or "aluminum").strip().lower(),
-                alloy=(row.get("alloy") or "3003").strip(),
-                k_factor_override=_to_float(row.get("k_factor_override"), None) or None,
-                bend_radius_override=_to_float(row.get("bend_radius_override"), None) or None,
-                gap_override=_to_float(row.get("gap_override"), None) or None,
-                stagger_angle=_to_float(row.get("stagger_angle"), 60.0),
-                margin=_to_float(row.get("margin"), 1.25),
-                top_type=(row.get("top_type") or "L").strip().upper(),
-                top_f1=_to_float(row.get("top_f1"), 0.0),
-                top_f2=_to_float(row.get("top_f2"), 0.0),
-                bottom_type=(row.get("bottom_type") or "L").strip().upper(),
-                bottom_f1=_to_float(row.get("bottom_f1"), 0.0),
-                bottom_f2=_to_float(row.get("bottom_f2"), 0.0),
-                left_type=(row.get("left_type") or "L").strip().upper(),
-                left_f1=_to_float(row.get("left_f1"), 0.0),
-                left_f2=_to_float(row.get("left_f2"), 0.0),
-                right_type=(row.get("right_type") or "L").strip().upper(),
-                right_f1=_to_float(row.get("right_f1"), 0.0),
-                right_f2=_to_float(row.get("right_f2"), 0.0),
-            ))
+        raw_lines = [ln for ln in f.readlines()
+                     if ln.strip() and not ln.lstrip().startswith("#")]
+    if not raw_lines:
+        raise ValueError("CSV is empty (no non-comment lines).")
+    reader = csv.DictReader(raw_lines)
+    if reader.fieldnames is None:
+        raise ValueError("CSV missing header row.")
+    reader.fieldnames = [str(h).strip().lower() for h in reader.fieldnames]
+    for i, row in enumerate(reader, start=2):
+        row = {str(k).strip().lower(): v for k, v in row.items() if k is not None}
+        panel_id = (row.get("panel_id") or "").strip()
+        if not panel_id:
+            raise ValueError(f"Row {i}: missing panel_id")
+        raw_code = (row.get("flange_code") or row.get("flange_type") or "").strip().upper()
+        if raw_code == "L": raw_code = "L4S"
+        elif raw_code == "J": raw_code = "J4S"
+        if raw_code not in FLANGE_CODES:
+            raise ValueError(f"Row {i}: flange_code must be one of {FLANGE_CODES}")
+        pattern = (row.get("pattern") or "").strip().lower()
+        if pattern not in {"straight", "staggered"}:
+            raise ValueError(f"Row {i}: pattern must be straight or staggered")
+        ftype = "J" if raw_code.startswith("J") else "L"
+        fastening_pair = (row.get("fastening_pair") or "").strip().lower()
+        if not fastening_pair:
+            raise ValueError(
+                f"Row {i}: fastening_pair is required. Use tb/lr/t/b/l/r/none "
+                f"(or legacy all/standard)."
+            )
+        if fastening_pair not in FASTENING_PAIR_VALUES:
+            raise ValueError(
+                f"Row {i}: fastening_pair must be one of {sorted(FASTENING_PAIR_VALUES)}"
+            )
+        material_key = (row.get("material") or "aluminum").strip().lower()
+        alloy_key = (row.get("alloy") or "3003").strip()
+        fastener_dia = _to_float(
+            _first_present(
+                row,
+                "fastener_dia",
+                "slot_width",
+                "fastener_slot_width",
+                "install_slot_width",
+            ),
+            0.1875,
+        )
+        slot_length = _to_float(
+            _first_present(
+                row,
+                "slot_length",
+                "fastener_slot_length",
+                "install_slot_length",
+            ),
+            None,
+        ) or None
+        if slot_length is not None and slot_length < fastener_dia:
+            raise ValueError(
+                f"Row {i}: slot_length ({slot_length}) must be >= fastener_dia ({fastener_dia})"
+            )
+        out.append(PanelSpec(
+            panel_id=panel_id,
+            face_width=float(row["width"]),
+            face_height=float(row["height"]),
+            thickness=_thickness_to_float(row["thickness"], material_key, alloy_key),
+            flange_code=raw_code, flange_type=ftype,
+            flange1_depth=_to_float(row.get("flange1_depth"), 0.0),
+            flange2_depth=_to_float(row.get("flange2_depth"), None) or None,
+            hole_dia=float(row["hole_diameter"]),
+            pitch=float(row["hole_pitch"]),
+            pattern=pattern,
+            fastening_pair=fastening_pair,
+            fastener_dia=fastener_dia,
+            slot_length=slot_length,
+            material=material_key,
+            alloy=alloy_key,
+            k_factor_override=_to_float(row.get("k_factor_override"), None) or None,
+            bend_radius_override=_to_float(row.get("bend_radius_override"), None) or None,
+            gap_override=_to_float(row.get("gap_override"), None) or None,
+            stagger_angle=_to_float(row.get("stagger_angle"), 60.0),
+            margin=_to_float(row.get("margin"), 1.25),
+            top_type=(row.get("top_type") or "L").strip().upper(),
+            top_f1=_to_float(row.get("top_f1"), 0.0),
+            top_f2=_to_float(row.get("top_f2"), 0.0),
+            bottom_type=(row.get("bottom_type") or "L").strip().upper(),
+            bottom_f1=_to_float(row.get("bottom_f1"), 0.0),
+            bottom_f2=_to_float(row.get("bottom_f2"), 0.0),
+            left_type=(row.get("left_type") or "L").strip().upper(),
+            left_f1=_to_float(row.get("left_f1"), 0.0),
+            left_f2=_to_float(row.get("left_f2"), 0.0),
+            right_type=(row.get("right_type") or "L").strip().upper(),
+            right_f1=_to_float(row.get("right_f1"), 0.0),
+            right_f2=_to_float(row.get("right_f2"), 0.0),
+        ))
     return out
 
 
@@ -179,7 +263,7 @@ def get_rules(spec):
     if spec.k_factor_override is not None and spec.bend_radius_override is not None:
         return {"k": spec.k_factor_override, "r": spec.bend_radius_override}
 
-    alloy = _normalize_alloy(spec.alloy)
+    alloy = _rule_family(spec.material, spec.alloy)
     t_key = round(spec.thickness, 4)
     entry = MATERIAL_TABLE.get((alloy, t_key))
 
@@ -269,36 +353,40 @@ def flat_size(spec):
 # ---------------------------------------------------------------------------
 # Blank outline - variable-sided polygon
 #
-# Edge count depends on corner types (per approved design):
-#   J+J corner: 4 edges (void, miter, miter, void)     J4S  → 20 sides
-#   L+L corner: 2 edges (void, void) square notch      L4S  → 12 sides
-#   J+L corner: 3 edges (void, miter, void)            MIX  → 16 sides
-#   active+inactive: 1 edge (square flange end)        2-side → 8 sides
-#   inactive+inactive: 0 edges                         (point only)
+# MITER RULE (per Section 7 / Section 8 "L overlaps J"):
+#   The 45° miter on a J flange exists ONLY to keep two return lips from
+#   colliding when they fold back on the panel back. A miter is therefore
+#   added only at corners where BOTH adjacent flanges are J (J+J corner).
+#   At any non-J+J corner (J+L, L+J, J+inactive) the J flange terminates
+#   square at the corner — geometrically identical to an L flange there.
 #
-# Hard corner (void inner) at ex+BD from blank edge where ex=f1+f2.
-# Void edge length = f1+BD so miter starts exactly at bend2 centerline.
+# Per-corner edge counts under this rule:
+#   J+J corner: 4 edges (void, miter, miter, void)
+#   L+L / J+L / L+J corner: 2 edges (square notch)
+#   active+inactive corner: 1 edge (square flange end)
+#   inactive+inactive: 0 edges (point only)
+#
+# Resulting outline counts:
+#   J4S = 20,  L4S = 12,  J2TB = J2LR = 8,  L2TB = L2LR = 8,
+#   MIX J-tb / L-lr = 12  (was 16 before the J+L miter was removed).
+#
+# Hard corner (void inner) at ex+BD from blank edge where ex = f1+f2.
+# Void edge length per corner:
+#   J side at J+J corner : f1+BD   (miter then takes the lip portion to blank)
+#   any side without miter : f1+f2+BD = el+BD  (path runs straight to blank)
 # ---------------------------------------------------------------------------
 
-def _blank_outline(blank_w, blank_h, sides, bd):
-    """
-    Build CCW blank outline polygon. Edge count varies by flange config:
-      J4S → 20,  L4S → 12,  2-side configs → 8,  MIX J+L → 16
+def _blank_outline(blank_w, blank_h, sides, bd, gap=0.0):
+    """Build CCW blank outline polygon. See module docstring above for the
+    per-corner miter rule and the resulting edge counts.
 
-    Structure: 4 corners + 4 primary edges, all 4 always present.
-    Inactive sides contribute a straight face-edge primary (no flange geometry).
-
-    Corner types (edges per corner):
-      J+J: 4 edges  (void, miter, miter, void)
-      L+L: 2 edges  (notch, notch) -- voids reach blank edge directly
-      J+L: 3 edges  (void, miter, notch)
-      J+N: 2 edges  (void, miter) -- square face corner on inactive side
-      L+N: 1 edge   (notch) -- straight to face corner
-      N+N: 0 edges  -- point only
-
-    Void edge length = f1+BD so miter starts exactly at bend2 centerline.
-    For L: f2=0, so void_end reaches blank edge directly (no miter).
-    """
+    gap (Section 8 / Section 9): anti-collision relief applied at J+J corners
+    only. Pulls v_void and h_void away from the hard corner by gap/2 along
+    their respective void edges; v_blank / h_blank remain anchored on the
+    blank edge so the miter rotates a tiny amount off 45° (≈0.4° at 1/32"
+    gap on a 2" lip — well inside fab tolerance). Default 0 relies on the
+    back J-relief circle for relief; set spec.gap_override for an explicit
+    miter gap (typical shop value 0.015"–0.030", i.e., ~1/32")."""
     bw, bh = blank_w, blank_h
     sl=sides["left"]; sr=sides["right"]
     sb=sides["bottom"]; st=sides["top"]
@@ -306,57 +394,54 @@ def _blank_outline(blank_w, blank_h, sides, bd):
     el=_side_extra(sl); er=_side_extra(sr)
     eb=_side_extra(sb); et=_side_extra(st)
 
-    # Hard corner positions
     fx0=el+bd;    fy0=eb+bd
     fx1=bw-er-bd; fy1=bh-et-bd
 
-    def _ve(sd): return (sd.f1+bd) if sd.active else 0.0   # void edge length
-    def _md(sd): return sd.f2 if (sd.active and sd.ftype=="J") else 0.0  # miter depth
+    def _corner_params(this_sd, other_sd):
+        """Effective (void_edge_length, miter_depth) for THIS side at the corner
+        it shares with OTHER. Miter is only present when both sides are J;
+        otherwise the void edge spans the full f1+f2+BD so it reaches the
+        blank edge straight (square end)."""
+        if not this_sd.active:
+            return (0.0, 0.0)
+        is_jj = (this_sd.ftype == "J"
+                 and other_sd.active and other_sd.ftype == "J")
+        if is_jj:
+            return (this_sd.f1 + bd, this_sd.f2)
+        return (this_sd.f1 + this_sd.f2 + bd, 0.0)
 
-    vb=_ve(sb); vt=_ve(st); vl=_ve(sl); vr=_ve(sr)
-    mb=_md(sb); mt=_md(st); ml=_md(sl); mr=_md(sr)
+    # (void_edge, miter_depth) per side per corner
+    fh1_bl, fh2_bl = _corner_params(sb, sl);  fv1_bl, fv2_bl = _corner_params(sl, sb)
+    fh1_br, fh2_br = _corner_params(sb, sr);  fv1_br, fv2_br = _corner_params(sr, sb)
+    fh1_tr, fh2_tr = _corner_params(st, sr);  fv1_tr, fv2_tr = _corner_params(sr, st)
+    fh1_tl, fh2_tl = _corner_params(st, sl);  fv1_tl, fv2_tl = _corner_params(sl, st)
 
-    def _corner(hsd, vsd, hc_x, hc_y, ox, oy, arrive_vert):
+    def _corner(hsd, vsd, hc_x, hc_y, ox, oy, arrive_vert,
+                fh1, fh2, fv1, fv2):
+        """Corner point sequence AFTER the arriving primary point, in CCW order.
+        h_J / v_J classify by 'miter present at this corner', not by side type:
+        a J flange at a non-J+J corner is treated as L here (no miter, no
+        bend2-step), which keeps the case dispatch unchanged.
         """
-        Returns corner points AFTER the arriving point, in CCW order.
-        arrive_vert: True if arriving from the vert primary (BL, TR)
-                     False if arriving from the horiz primary (BR, TL)
-
-        Sequences (after arrive point, ending with depart start):
-          arrive_vert=True  (BL/TR): arrive from left/right primary
-            J+J: v_void, hc, h_void, h_blank
-            J+L: v_void, hc, h_blank
-            L+J: hc, h_void, h_blank    [L arrives, J departs... wait]
-            L+L: hc, h_blank
-            J+N: v_void, hc             [depart to inactive horiz = just face]
-            L+N: hc
-            N+J: (empty)                [inactive arrives, handled by arrive point]
-            N+L: (empty)
-
-          arrive_vert=False (BR/TL): arrive from bottom/top primary
-            J+J: hc, v_void, v_blank    [J departs to vert primary]
-            L+J: hc, v_void, v_blank    [L arrives from horiz, J departs]
-            J+L: h_void, hc             [J arrives from horiz... wait J is horiz at BR?]
-            L+L: hc                     [L arrives and departs]
-            N+J: v_void, v_blank        [inactive horiz, J departs]
-            N+L: (empty)
-            J+N: h_void, hc
-            L+N: hc
-
-        Note: hsd = horizontal side (bottom/top), vsd = vertical side (left/right)
-        """
-        fh1=_ve(hsd); fv1=_ve(vsd)
-        fh2=_md(hsd); fv2=_md(vsd)
         hc=(hc_x, hc_y)
 
-        h_void  = (hc_x,            hc_y+oy*fh1)
-        h_blank = (hc_x+(-ox)*fh2,  hc_y+oy*(fh1+fh2))
-        v_void  = (hc_x+ox*fv1,     hc_y)
-        v_blank = (hc_x+ox*(fv1+fv2), hc_y+(-oy)*fv2)
+        h_void  = (hc_x,                    hc_y+oy*fh1)
+        h_blank = (hc_x+(-ox)*fh2,          hc_y+oy*(fh1+fh2))
+        v_void  = (hc_x+ox*fv1,             hc_y)
+        v_blank = (hc_x+ox*(fv1+fv2),       hc_y+(-oy)*fv2)
 
-        h_J = hsd.active and fh2>0
+        # Section 9 anti-collision: at J+J corners only, pull the miter end
+        # points away from hc by gap/2 along their void edges. v_blank /
+        # h_blank stay on the blank edge so the miter angle shifts marginally
+        # while the apex of the V opens up by the requested gap.
+        if gap > 0 and fh2 > 0 and fv2 > 0:
+            half = gap / 2.0
+            v_void = (v_void[0] + ox*half, v_void[1])
+            h_void = (h_void[0],           h_void[1] + oy*half)
+
+        h_J = hsd.active and fh2 > 0
         h_L = hsd.active and not h_J
-        v_J = vsd.active and fv2>0
+        v_J = vsd.active and fv2 > 0
         v_L = vsd.active and not v_J
 
         if arrive_vert:
@@ -370,10 +455,9 @@ def _blank_outline(blank_w, blank_h, sides, bd):
             if v_J and h_J:   return [v_void, hc, h_void, h_blank]
             if v_J and h_L:   return [v_void, hc, h_blank]
             if v_L and h_J:   return [hc, h_void, h_blank]
-            return             [hc, h_blank]  # L+L
+            return             [hc, h_blank]
         else:
             # Arriving from horiz (bottom/top), departing to vert (left/right)
-            # v_void = blank vert edge point for L (fv2=0, so v_void=v_blank)
             if not hsd.active and not vsd.active:  return []
             if hsd.active and not vsd.active:
                 return [h_void, hc] if h_J else [hc]
@@ -381,34 +465,27 @@ def _blank_outline(blank_w, blank_h, sides, bd):
                 return [hc, v_void, v_blank] if v_J else [hc, v_void]
             # Both active
             if h_J and v_J:   return [h_void, hc, v_void, v_blank]
-            if h_J and v_L:   return [h_void, hc, v_void]   # v_void=blank vert edge for L
+            if h_J and v_L:   return [h_void, hc, v_void]
             if h_L and v_J:   return [hc, v_void, v_blank]
-            return             [hc, v_void]  # L+L: v_void=blank vert edge
+            return             [hc, v_void]
 
-    # Build CCW polygon
-    # arrive_vert alternates: BL=True, BR=False, TR=True, TL=False
-    bl = _corner(sb, sl, fx0, fy0, ox=-1, oy=-1, arrive_vert=True)
-    br = _corner(sb, sr, fx1, fy0, ox=+1, oy=-1, arrive_vert=False)
-    tr = _corner(st, sr, fx1, fy1, ox=+1, oy=+1, arrive_vert=True)
-    tl = _corner(st, sl, fx0, fy1, ox=-1, oy=+1, arrive_vert=False)
+    bl = _corner(sb, sl, fx0, fy0, -1, -1, True,  fh1_bl, fh2_bl, fv1_bl, fv2_bl)
+    br = _corner(sb, sr, fx1, fy0, +1, -1, False, fh1_br, fh2_br, fv1_br, fv2_br)
+    tr = _corner(st, sr, fx1, fy1, +1, +1, True,  fh1_tr, fh2_tr, fv1_tr, fv2_tr)
+    tl = _corner(st, sl, fx0, fy1, -1, +1, False, fh1_tl, fh2_tl, fv1_tl, fv2_tl)
 
-    # Arrive points (end of incoming primary at each corner)
-    def _arr_vert(vsd, hc_x, hc_y, ox, oy):
-        """End of vert primary = v_blank (on blank vert edge, or hc if inactive)."""
-        fv1=_ve(vsd); fv2=_md(vsd)
+    def _arr_vert(vsd, hc_x, hc_y, ox, oy, fv1, fv2):
         if not vsd.active: return (hc_x, hc_y)
         return (hc_x+ox*(fv1+fv2), hc_y+(-oy)*fv2)
 
-    def _arr_horiz(hsd, hc_x, hc_y, ox, oy):
-        """End of horiz primary = h_blank (on blank horiz edge, or hc if inactive)."""
-        fh1=_ve(hsd); fh2=_md(hsd)
+    def _arr_horiz(hsd, hc_x, hc_y, ox, oy, fh1, fh2):
         if not hsd.active: return (hc_x, hc_y)
         return (hc_x+(-ox)*fh2, hc_y+oy*(fh1+fh2))
 
-    bl_arr = _arr_vert (sl, fx0, fy0, ox=-1, oy=-1)  # end of left primary
-    br_arr = _arr_horiz(sb, fx1, fy0, ox=+1, oy=-1)  # end of bottom primary
-    tr_arr = _arr_vert (sr, fx1, fy1, ox=+1, oy=+1)  # end of right primary
-    tl_arr = _arr_horiz(st, fx0, fy1, ox=-1, oy=+1)  # end of top primary
+    bl_arr = _arr_vert (sl, fx0, fy0, -1, -1, fv1_bl, fv2_bl)
+    br_arr = _arr_horiz(sb, fx1, fy0, +1, -1, fh1_br, fh2_br)
+    tr_arr = _arr_vert (sr, fx1, fy1, +1, +1, fv1_tr, fv2_tr)
+    tl_arr = _arr_horiz(st, fx0, fy1, -1, +1, fh1_tl, fh2_tl)
 
     pts = []
     def _app(pt):
@@ -479,7 +556,7 @@ def _draw_bend_lines(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
 
 
 # ---------------------------------------------------------------------------
-# Fastening holes
+# Fastening slots
 # ---------------------------------------------------------------------------
 def _fastening_sides(spec, sides):
     fp=spec.fastening_pair.strip().lower()
@@ -492,52 +569,141 @@ def _fastening_sides(spec, sides):
     return [name] if name in active else []
 
 
-def _l_positions(side_length, margin=2.0, target=12.0):
-    span=side_length-2.0*margin
-    if span<=0: return [side_length/2.0]
-    n=max(1,round(span/target)); sp=span/n
-    return [margin+i*sp for i in range(n+1)]
-
-
-def _j_positions(coords):
+def _aligned_positions(coords):
     if not coords: return []
-    holes=sorted(coords); sel=[holes[0]]
+    holes=sorted({round(c, 6) for c in coords}); sel=[holes[0]]
     for h in holes[1:]:
         if h-sel[-1]>=11.5: sel.append(h)
     if holes[-1] not in sel and holes[-1]-sel[-1]>0.5: sel.append(holes[-1])
     return sel
 
 
-def _draw_fastening_holes(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
-                           sides, blank_w, blank_h):
+def _l_positions(side_length, margin=2.0, target=12.0, max_spacing=13.0):
+    """L-flange slot centers along a side.
+
+    Start/end holes sit at the requested margin from each end. Interior spacing
+    floats to be as close to 12" as possible, but never exceeds 13".
+    """
+    span = side_length - 2.0 * margin
+    if span <= 0:
+        return [side_length / 2.0]
+
+    intervals = max(1, round(span / target))
+    while span / intervals > max_spacing:
+        intervals += 1
+    spacing = span / intervals
+    return [margin + i * spacing for i in range(intervals + 1)]
+
+
+def _add_slot(msp, cx, cy, width, length, orientation, layer):
+    """Add a rounded slot as a closed lwpolyline with semicircular ends."""
+    if width <= 0 or length < width:
+        return
+    r = width / 2.0
+    a = (length - width) / 2.0
+
+    if orientation == "horizontal":
+        pts = [
+            (cx-a, cy+r, 0.0),
+            (cx+a, cy+r, 1.0),
+            (cx+a, cy-r, 0.0),
+            (cx-a, cy-r, 1.0),
+        ]
+    else:
+        pts = [
+            (cx-r, cy+a, 1.0),
+            (cx+r, cy+a, 0.0),
+            (cx+r, cy-a, 1.0),
+            (cx-r, cy-a, 0.0),
+        ]
+    msp.add_lwpolyline(pts, format="xyb", close=True, dxfattribs={"layer": layer})
+
+
+def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
+                          sides, blank_w, blank_h):
     active=_fastening_sides(spec,sides)
     if not active: return
     face_holes=_hole_centers(fx0,fy0,face_w,face_h,
                              spec.hole_dia,spec.pitch,spec.pattern,
                              spec.stagger_angle,spec.margin)
-    fdia=spec.fastener_dia; tol=max(0.01,spec.pitch*0.3)
+    fdia=spec.fastener_dia
+    flen=spec.slot_length if spec.slot_length is not None else (fdia+INSTALL_SLOT_EXTRA)
     for sn in active:
         sd=sides[sn]
         if sn in ("bottom","top"):
             is_b=(sn=="bottom")
             if sd.ftype=="J":
                 hy=sd.f2/2.0 if is_b else blank_h-sd.f2/2.0
-                ey=fy0 if is_b else fy1
-                xs=_j_positions([c[0] for c in face_holes if abs(c[1]-ey)<=tol])
+                xs=_aligned_positions([c[0] for c in face_holes])
             else:
                 hy=(fy0-sd.f1/2.0) if is_b else (fy1+sd.f1/2.0)
                 xs=[fx0+p for p in _l_positions(face_w)]
-            for px in xs: msp.add_circle((px,hy),fdia/2.0,dxfattribs={"layer":"fastening"})
+            for px in xs:
+                _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
         else:
             is_l=(sn=="left")
             if sd.ftype=="J":
                 hx=sd.f2/2.0 if is_l else blank_w-sd.f2/2.0
-                ex=fx0 if is_l else fx1
-                ys=_j_positions([c[1] for c in face_holes if abs(c[0]-ex)<=tol])
+                ys=_aligned_positions([c[1] for c in face_holes])
             else:
                 hx=(fx0-sd.f1/2.0) if is_l else (fx1+sd.f1/2.0)
                 ys=[fy0+p for p in _l_positions(face_h)]
-            for py in ys: msp.add_circle((hx,py),fdia/2.0,dxfattribs={"layer":"fastening"})
+            for py in ys:
+                _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
+
+
+# ---------------------------------------------------------------------------
+# Section 6 corner reliefs
+#
+#   Square face-corner notch (OSS = R + T, +0.010" buffer):
+#     - One small closed rectangle per active corner, on the "cut" layer
+#     - Anchored at the hard corner (hc) and extending into the FACE material
+#     - When 4 panels meet, the four notches combine into a 2*OSS reveal on
+#       the face side (HD Clad system standard, Section 9)
+#
+#   Circular back J-relief (diameter = 2 * T):
+#     - One circle per J+J corner, on the "cut" layer
+#     - Centered at the intersection of the two secondary (bend2) centerlines
+#     - Allows the two return lips to stretch independently during second bend
+# ---------------------------------------------------------------------------
+def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t):
+    if t <= 0:
+        return
+
+    oss        = r + t
+    notch_size = oss + RELIEF_BUFFER
+
+    sl = sides["left"];  sr = sides["right"]
+    sb = sides["bottom"]; st_ = sides["top"]
+
+    # (hsd, vsd, hc_x, hc_y, vox, voy)
+    # vox/voy = unit direction from hc INTO the void; face direction is the negation.
+    corners = (
+        (sb,  sl, fx0, fy0, -1, -1),  # BL
+        (sb,  sr, fx1, fy0, +1, -1),  # BR
+        (st_, sr, fx1, fy1, +1, +1),  # TR
+        (st_, sl, fx0, fy1, -1, +1),  # TL
+    )
+
+    for hsd, vsd, hc_x, hc_y, vox, voy in corners:
+        if not (hsd.active and vsd.active):
+            continue
+
+        # Square face-corner notch — cut into face material from hc
+        fx_dir, fy_dir = -vox, -voy
+        notch = [
+            (hc_x,                    hc_y),
+            (hc_x + fx_dir*notch_size, hc_y),
+            (hc_x + fx_dir*notch_size, hc_y + fy_dir*notch_size),
+            (hc_x,                    hc_y + fy_dir*notch_size),
+        ]
+        msp.add_lwpolyline(notch, close=True, dxfattribs={"layer": "cut"})
+
+        # Back J-relief — only at J+J corners, centered at bend2 CL intersection
+        if hsd.ftype == "J" and vsd.ftype == "J" and hsd.f2 > 0 and vsd.f2 > 0:
+            cx = vsd.f2 if vox < 0 else (blank_w - vsd.f2)
+            cy = hsd.f2 if voy < 0 else (blank_h - hsd.f2)
+            msp.add_circle((cx, cy), t, dxfattribs={"layer": "cut"})
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +716,7 @@ def generate_panel_dxf(spec, outdir):
     ba2    = _ba_half(r,k,t)
     sides  = resolve_sides(spec)
     bw,bh  = flat_size(spec)
+    gap    = spec.gap_override if spec.gap_override is not None else MITER_GAP_DEFAULT
 
     # Hard corner positions (void inner corners)
     el=_side_extra(sides["left"]); er=_side_extra(sides["right"])
@@ -562,9 +729,10 @@ def generate_panel_dxf(spec, outdir):
     for name,color in [("cut",1),("holes",2),("fastening",5),("bend",3)]:
         if name not in doc.layers: doc.layers.add(name=name,color=color)
 
-    pts=_blank_outline(bw,bh,sides,bd)
+    pts=_blank_outline(bw,bh,sides,bd,gap)
     msp.add_lwpolyline(pts,close=True,dxfattribs={"layer":"cut"})
 
+    _draw_corner_reliefs(msp,fx0,fy0,fx1,fy1,bw,bh,sides,r,t)
     _draw_bend_lines(msp,fx0,fy0,fx1,fy1,bw,bh,sides,ba2)
 
     for x,y in _hole_centers(fx0,fy0,face_w,face_h,
@@ -572,7 +740,7 @@ def generate_panel_dxf(spec, outdir):
                               spec.stagger_angle,spec.margin):
         msp.add_circle((x,y),spec.hole_dia/2.0,dxfattribs={"layer":"holes"})
 
-    _draw_fastening_holes(msp,spec,fx0,fy0,fx1,fy1,face_w,face_h,sides,bw,bh)
+    _draw_fastening_slots(msp,spec,fx0,fy0,fx1,fy1,face_w,face_h,sides,bw,bh)
 
     os.makedirs(outdir,exist_ok=True)
     doc.saveas(os.path.join(outdir,f"{spec.panel_id}.dxf"))
