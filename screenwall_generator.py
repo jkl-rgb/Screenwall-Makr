@@ -157,7 +157,12 @@ def parse_csv(path):
                      if ln.strip() and not ln.lstrip().startswith("#")]
     if not raw_lines:
         raise ValueError("CSV is empty (no non-comment lines).")
-    reader = csv.DictReader(raw_lines)
+    sample = "".join(raw_lines[:5])
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
+    except csv.Error:
+        dialect = csv.excel
+    reader = csv.DictReader(raw_lines, dialect=dialect)
     if reader.fieldnames is None:
         raise ValueError("CSV missing header row.")
     reader.fieldnames = [str(h).strip().lower() for h in reader.fieldnames]
