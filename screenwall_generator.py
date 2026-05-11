@@ -144,6 +144,37 @@ def _thickness_to_float(v, material: str = "aluminum", alloy: str = "3003"):
     return float(raw)
 
 
+def _read_csv_text(path: str) -> str:
+    """Read CSV-like text from common spreadsheet encodings."""
+    raw_bytes = open(path, "rb").read()
+    for encoding in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
+        try:
+            text = raw_bytes.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if "\x00" not in text[:200]:
+            return text
+    return raw_bytes.decode("utf-8-sig", errors="replace").replace("\x00", "")
+
+
+def _choose_csv_dialect(raw_lines):
+    """Pick the delimiter from the actual header row when possible."""
+    header = raw_lines[0].replace("\x00", "").strip()
+    expected = {"panel_id", "width", "height", "thickness"}
+    for delim in (",", "\t", ";"):
+        fields = [part.strip().lower() for part in header.split(delim)]
+        if expected.issubset(fields):
+            dialect = csv.excel()
+            dialect.delimiter = delim
+            return dialect
+
+    sample = "".join(raw_lines[:5]).replace("\x00", "")
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=",\t;")
+    except csv.Error:
+        return csv.excel
+
+
 def parse_csv(path):
     """Parse a panel-spec CSV.
 
@@ -152,16 +183,15 @@ def parse_csv(path):
     template is self-documenting in Excel without breaking upload.
     """
     out = []
-    with open(path, newline="", encoding="utf-8-sig") as f:
-        raw_lines = [ln for ln in f.readlines()
-                     if ln.strip() and not ln.lstrip().startswith("#")]
+    text = _read_csv_text(path)
+    raw_lines = [
+        ln.replace("\x00", "")
+        for ln in text.splitlines(keepends=True)
+        if ln.strip() and not ln.lstrip().startswith("#")
+    ]
     if not raw_lines:
         raise ValueError("CSV is empty (no non-comment lines).")
-    sample = "".join(raw_lines[:5])
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",\t;")
-    except csv.Error:
-        dialect = csv.excel
+    dialect = _choose_csv_dialect(raw_lines)
     reader = csv.DictReader(raw_lines, dialect=dialect)
     if reader.fieldnames is None:
         raise ValueError("CSV missing header row.")
