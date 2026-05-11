@@ -76,39 +76,9 @@ STEEL_EXAMPLE = [
 
 ALL_HEADERS = STANDARD_HEADERS + MIX_EXTRA_HEADERS
 
-# Header row contains both the column names and a leading instructions banner
-# (as a CSV comment line) so the file is self-documenting when opened in Excel.
-TEMPLATE_INSTRUCTIONS = [
-    "# Screenwall Makr CSV — fill one row per panel. Delete example rows before upload.",
-    "# THICKNESS + MATERIAL/ALLOY:",
-    "#   - Decimal thickness (e.g. 0.1875) works for any material; alloy still drives k/r.",
-    "#   - Gauge strings ('16 ga' / '14 ga' / '11 ga') decode differently per material:",
-    "#       aluminum (default): 16=0.0625, 14=0.0800, 11=0.1250",
-    "#       steel             : 16=0.0600, 14=0.0750, 11=0.1200  (Section 2 / shop table)",
-    "#   - For STEEL rows: material=steel is enough to drive steel gauge decoding",
-    "#     and steel bend-rule lookup. alloy may be 'steel' or a steel descriptor",
-    "#     for clarity, but it no longer has to be 'steel' just to hit the table.",
-    "#   - For ALUMINUM rows: alloy = 3003 / 5052 / 6061 (per MATERIAL_TABLE in code).",
-    "#   - 6061-T6 requires larger bend radii; verify with shop before production.",
-    "# COLUMN NOTES:",
-    "#   flange_code = L4S / J4S / L2TB / J2TB / L2LR / J2LR / MIX",
-    "#   J flanges require flange2_depth (return lip). L flanges leave it blank.",
-    "#   MIX uses per-side columns (top_type/top_f1/top_f2, etc).",
-    "#   fastening_pair is REQUIRED: tb / lr / t / b / l / r / none",
-    "#     (legacy all/standard still parse, but explicit side selection is preferred).",
-    "#     Typical practice: place install slots on the long sides only.",
-    "#   fastener_dia = install slot WIDTH.",
-    "#     Accepted width aliases on import: slot_width, fastener_slot_width, install_slot_width",
-    "#   slot_length (optional) = total install slot length.",
-    "#     Accepted length aliases on import: fastener_slot_length, install_slot_length",
-    "#     Leave blank to use the default: fastener_dia + 0.50\".",
-    "#   gap_override (optional, advanced): miter anti-collision gap at J+J corners.",
-    "#     leave blank for default 0; set ~0.03125 (1/32\") to widen the miter apex.",
-    "# All dimensions in inches.",
-]
-
-template_csv = "\n".join(TEMPLATE_INSTRUCTIONS) + "\n"
-template_csv += ",".join(ALL_HEADERS) + "\n"
+# Keep the downloadable template data-only. Spreadsheet apps can rewrite
+# comment-prefixed instruction rows in ways that break subsequent uploads.
+template_csv = ",".join(ALL_HEADERS) + "\n"
 template_csv += ",".join(STANDARD_EXAMPLE) + "\n"
 template_csv += ",".join(MIX_EXAMPLE) + "\n"
 template_csv += ",".join(STEEL_EXAMPLE) + "\n"
@@ -281,7 +251,7 @@ st.download_button(
     file_name="screenwall_template.csv",
     mime="text/csv",
 )
-st.caption("Populate the template and upload below. All dimensions in inches.")
+st.caption("Populate the template and upload below. All dimensions in inches. Import guidance lives in the expanders above.")
 
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
 

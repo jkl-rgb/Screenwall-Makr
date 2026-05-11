@@ -640,15 +640,15 @@ def _add_slot(msp, cx, cy, width, length, orientation, layer):
     if orientation == "horizontal":
         pts = [
             (cx-a, cy+r, 0.0),
-            (cx+a, cy+r, 1.0),
+            (cx+a, cy+r, -1.0),
             (cx+a, cy-r, 0.0),
-            (cx-a, cy-r, 1.0),
+            (cx-a, cy-r, -1.0),
         ]
     else:
         pts = [
-            (cx-r, cy+a, 1.0),
+            (cx-r, cy+a, -1.0),
             (cx+r, cy+a, 0.0),
-            (cx+r, cy-a, 1.0),
+            (cx+r, cy-a, -1.0),
             (cx-r, cy-a, 0.0),
         ]
     msp.add_lwpolyline(pts, format="xyb", close=True, dxfattribs={"layer": layer})
@@ -692,16 +692,17 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
 #
 #   Square face-corner notch (OSS = R + T, +0.010" buffer):
 #     - One small closed rectangle per active corner, on the "cut" layer
-#     - Anchored at the hard corner (hc) and extending into the FACE material
-#     - When 4 panels meet, the four notches combine into a 2*OSS reveal on
-#       the face side (HD Clad system standard, Section 9)
+#     - Centered on the intersection of the two bend1 centerlines so the
+#       relief actually clears the bend-zone collision/pucker point
+#     - This keeps the relief in the bend intersection rather than burying it
+#       in the finished face area
 #
 #   Circular back J-relief (diameter = 2 * T):
 #     - One circle per J+J corner, on the "cut" layer
 #     - Centered at the intersection of the two secondary (bend2) centerlines
 #     - Allows the two return lips to stretch independently during second bend
 # ---------------------------------------------------------------------------
-def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t):
+def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t, ba2):
     if t <= 0:
         return
 
@@ -724,13 +725,15 @@ def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t)
         if not (hsd.active and vsd.active):
             continue
 
-        # Square face-corner notch — cut into face material from hc
-        fx_dir, fy_dir = -vox, -voy
+        # Square bend relief — centered at bend1 CL intersection.
+        cx = hc_x + vox * ba2
+        cy = hc_y + voy * ba2
+        half = notch_size / 2.0
         notch = [
-            (hc_x,                    hc_y),
-            (hc_x + fx_dir*notch_size, hc_y),
-            (hc_x + fx_dir*notch_size, hc_y + fy_dir*notch_size),
-            (hc_x,                    hc_y + fy_dir*notch_size),
+            (cx - half, cy - half),
+            (cx + half, cy - half),
+            (cx + half, cy + half),
+            (cx - half, cy + half),
         ]
         msp.add_lwpolyline(notch, close=True, dxfattribs={"layer": "cut"})
 
@@ -767,7 +770,7 @@ def generate_panel_dxf(spec, outdir):
     pts=_blank_outline(bw,bh,sides,bd,gap)
     msp.add_lwpolyline(pts,close=True,dxfattribs={"layer":"cut"})
 
-    _draw_corner_reliefs(msp,fx0,fy0,fx1,fy1,bw,bh,sides,r,t)
+    _draw_corner_reliefs(msp,fx0,fy0,fx1,fy1,bw,bh,sides,r,t,ba2)
     _draw_bend_lines(msp,fx0,fy0,fx1,fy1,bw,bh,sides,ba2)
 
     for x,y in _hole_centers(fx0,fy0,face_w,face_h,
