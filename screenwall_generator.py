@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Optional
 import ezdxf
 from ezdxf.enums import TextEntityAlignment
+from ezdxf.addons import text2path
+from ezdxf.fonts import fonts
 
 # ---------------------------------------------------------------------------
 # Bend math verified against Fusion 360 (0.1875" 3003, r=0.125, k=0.33):
@@ -485,13 +487,22 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
             face_x = x1 if ox < 0 else x0
             flange_y = y0 if oy < 0 else y1
             face_y = y1 if oy < 0 else y0
-            notch_path = [
-                (flange_x, hc_y),
-                (flange_x, face_y),
-                (face_x, face_y),
-                (face_x, flange_y),
-                (hc_x, flange_y),
-            ]
+            if hsd.ftype == "J" and vsd.ftype == "J":
+                notch_path = [
+                    (flange_x, hc_y),
+                    (flange_x, face_y),
+                    (face_x, face_y),
+                    (face_x, flange_y),
+                    (hc_x, flange_y),
+                ]
+            else:
+                notch_path = [
+                    (flange_x, hc_y),
+                    (flange_x, flange_y),
+                    (face_x, flange_y),
+                    (face_x, face_y),
+                    (hc_x, face_y),
+                ]
 
         h_J = hsd.active and fh2 > 0
         h_L = hsd.active and not h_J
@@ -827,19 +838,22 @@ def _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face
     if not anchor:
         return
 
-    if "ETCH" not in doc.styles:
-        doc.styles.add("ETCH", font="romans.shx")
-
-    text = msp.add_text(
-        spec.panel_id,
-        dxfattribs={
-            "layer": "text",
-            "style": "ETCH",
-            "height": 0.5,
-            "rotation": anchor["rotation"],
-        },
+    font_face = fonts.FontFace(filename="romans.shx")
+    matrix = (
+        ezdxf.math.Matrix44.z_rotate(math.radians(anchor["rotation"]))
+        @ ezdxf.math.Matrix44.translate(anchor["x"], anchor["y"], 0.0)
     )
-    text.set_placement((anchor["x"], anchor["y"]), align=TextEntityAlignment.MIDDLE_CENTER)
+    for path in text2path.make_paths_from_str(
+        spec.panel_id,
+        font=font_face,
+        size=0.5,
+        align=TextEntityAlignment.MIDDLE_CENTER,
+        m=matrix,
+    ):
+        for sub_path in path.sub_paths():
+            points = [(v.x, v.y) for v in sub_path.flattening(distance=0.01)]
+            if len(points) >= 2:
+                msp.add_lwpolyline(points, close=False, dxfattribs={"layer": "text"})
 
 
 def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
