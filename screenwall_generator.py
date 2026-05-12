@@ -532,22 +532,17 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
             face_x = x1 if ox < 0 else x0
             flange_y = y0 if oy < 0 else y1
             face_y = y1 if oy < 0 else y0
-            if hsd.ftype == "J" and vsd.ftype == "J":
-                notch_path = [
-                    (flange_x, hc_y),
-                    (flange_x, face_y),
-                    (face_x, face_y),
-                    (face_x, flange_y),
-                    (hc_x, flange_y),
-                ]
-            else:
-                notch_path = [
-                    (flange_x, hc_y),
-                    (flange_x, flange_y),
-                    (face_x, flange_y),
-                    (face_x, face_y),
-                    (hc_x, face_y),
-                ]
+            # Walk the relief square in the same inward order for every active
+            # corner. J+J corners still differ because they add miter/void
+            # segments around this path; non-J+J corners should not flip the
+            # square and create the old outward dogleg.
+            notch_path = [
+                (flange_x, hc_y),
+                (flange_x, face_y),
+                (face_x, face_y),
+                (face_x, flange_y),
+                (hc_x, flange_y),
+            ]
 
         h_J = hsd.active and fh2 > 0
         h_L = hsd.active and not h_J
