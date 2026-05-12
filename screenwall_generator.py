@@ -3,6 +3,7 @@ import csv, math, os
 from dataclasses import dataclass
 from typing import Optional
 import ezdxf
+from ezdxf.enums import TextEntityAlignment
 
 # ---------------------------------------------------------------------------
 # Bend math verified against Fusion 360 (0.1875" 3003, r=0.125, k=0.33):
@@ -484,18 +485,13 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
             face_x = x1 if ox < 0 else x0
             flange_y = y0 if oy < 0 else y1
             face_y = y1 if oy < 0 else y0
-            overlaps_corner = (
-                (face_x - hc_x) * ox <= 1e-9 and
-                (face_y - hc_y) * oy <= 1e-9
-            )
-            if overlaps_corner:
-                notch_path = [
-                    (flange_x, hc_y),
-                    (flange_x, face_y),
-                    (face_x, face_y),
-                    (face_x, flange_y),
-                    (hc_x, flange_y),
-                ]
+            notch_path = [
+                (flange_x, hc_y),
+                (flange_x, face_y),
+                (face_x, face_y),
+                (face_x, flange_y),
+                (hc_x, flange_y),
+            ]
 
         h_J = hsd.active and fh2 > 0
         h_L = hsd.active and not h_J
@@ -510,8 +506,10 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
             if not hsd.active and vsd.active:
                 return [v_void, hc] if v_J else [hc]
             # Both active
-            if notch_path and v_J and h_J:
-                return [v_void, *notch_path, h_void, h_blank]
+            if notch_path:
+                prefix = [v_void] if v_J else []
+                suffix = [h_void, h_blank] if h_J else [h_blank]
+                return [*prefix, *notch_path, *suffix]
             if v_J and h_J:   return [v_void, hc, h_void, h_blank]
             if v_J and h_L:   return [v_void, hc, h_blank]
             if v_L and h_J:   return [hc, h_void, h_blank]
@@ -524,8 +522,10 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
             if not hsd.active and vsd.active:
                 return [hc, v_void, v_blank] if v_J else [hc, v_void]
             # Both active
-            if notch_path and h_J and v_J:
-                return [h_void, *reversed(notch_path), v_void, v_blank]
+            if notch_path:
+                prefix = [h_void] if h_J else []
+                suffix = [v_void, v_blank] if v_J else [v_void]
+                return [*prefix, *reversed(notch_path), *suffix]
             if h_J and v_J:   return [h_void, hc, v_void, v_blank]
             if h_J and v_L:   return [h_void, hc, v_void]
             if h_L and v_J:   return [hc, v_void, v_blank]
@@ -729,6 +729,18 @@ def _add_slot(msp, cx, cy, width, length, orientation, layer):
     msp.add_lwpolyline(pts, format="xyb", close=True, dxfattribs={"layer": layer})
 
 
+def _preferred_id_side(sides):
+    order = ("top", "right", "bottom", "left")
+    for name in order:
+        sd = sides[name]
+        if sd.active and sd.ftype == "L":
+            return name
+    for name in order:
+        if sides[name].active:
+            return name
+    return None
+
+
 def _j_slot_normal_center(side_name, bend1, face_holes, bd):
     if not face_holes:
         return bend1[side_name]
@@ -753,6 +765,81 @@ def _holes_on_same_row(face_holes, y, tol=1e-6):
 
 def _holes_on_same_col(face_holes, x, tol=1e-6):
     return [(hx, y) for hx, y in face_holes if abs(hx - x) <= tol]
+
+
+def _first_clockwise_position(side_name, positions):
+    if not positions:
+        return None
+    if side_name in ("top", "left"):
+        return min(positions)
+    return max(positions)
+
+
+def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length):
+    side_name = _preferred_id_side(sides)
+    if not side_name:
+        return None
+
+    sd = sides[side_name]
+    if side_name in ("top", "bottom"):
+        along_positions = (
+            _aligned_positions([x for x, _ in face_holes])
+            if sd.ftype == "J"
+            else [fx0 + p for p in _l_positions(face_w)]
+        )
+        first_pos = _first_clockwise_position(side_name, along_positions) or ((fx0 + fx0 + face_w) / 2.0)
+        normal = (
+            (sd.f2 / 2.0) if side_name == "bottom" else (blank_h - sd.f2 / 2.0)
+            if sd.ftype == "J"
+            else ((bend1[side_name] / 2.0) if side_name == "bottom" else ((blank_h + bend1[side_name]) / 2.0))
+        )
+        direction = 1.0 if side_name == "top" else -1.0
+        return {
+            "side": side_name,
+            "x": first_pos + direction * (slot_length / 2.0),
+            "y": normal,
+            "rotation": 0.0,
+        }
+
+    along_positions = (
+        _aligned_positions([y for _, y in face_holes])
+        if sd.ftype == "J"
+        else [fy0 + p for p in _l_positions(face_h)]
+    )
+    first_pos = _first_clockwise_position(side_name, along_positions) or ((fy0 + fy0 + face_h) / 2.0)
+    normal = (
+        (sd.f2 / 2.0) if side_name == "left" else (blank_w - sd.f2 / 2.0)
+        if sd.ftype == "J"
+        else ((bend1[side_name] / 2.0) if side_name == "left" else ((blank_w + bend1[side_name]) / 2.0))
+    )
+    direction = 1.0 if side_name == "left" else -1.0
+    return {
+        "side": side_name,
+        "x": normal,
+        "y": first_pos + direction * (slot_length / 2.0),
+        "rotation": 90.0,
+    }
+
+
+def _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd):
+    slot_length = spec.slot_length if spec.slot_length is not None else (spec.fastener_dia + INSTALL_SLOT_EXTRA)
+    anchor = _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length)
+    if not anchor:
+        return
+
+    if "ETCH" not in doc.styles:
+        doc.styles.add("ETCH", font="romans.shx")
+
+    text = msp.add_text(
+        spec.panel_id,
+        dxfattribs={
+            "layer": "text",
+            "style": "ETCH",
+            "height": 0.5,
+            "rotation": anchor["rotation"],
+        },
+    )
+    text.set_placement((anchor["x"], anchor["y"]), align=TextEntityAlignment.MIDDLE_CENTER)
 
 
 def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
@@ -809,53 +896,7 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
 #     - Otherwise fall back to the closed square relief
 # ---------------------------------------------------------------------------
 def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t, ba2):
-    if t <= 0:
-        return
-
-    notch_size = 2.0 * t
-    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
-
-    sl = sides["left"];  sr = sides["right"]
-    sb = sides["bottom"]; st_ = sides["top"]
-
-    # (horizontal side, vertical side, horiz bend1 key, vert bend1 key, ox, oy)
-    corners = (
-        (sb,  sl, "bottom", "left",  -1, -1),  # BL
-        (sb,  sr, "bottom", "right", +1, -1),  # BR
-        (st_, sr, "top",    "right", +1, +1),  # TR
-        (st_, sl, "top",    "left",  -1, +1),  # TL
-    )
-
-    for hsd, vsd, h_key, v_key, ox, oy in corners:
-        if not (hsd.active and vsd.active):
-            continue
-
-        # Square bend relief — centered at bend1 CL intersection.
-        cx = bend1[v_key]
-        cy = bend1[h_key]
-        half = notch_size / 2.0
-        x0, x1 = cx - half, cx + half
-        y0, y1 = cy - half, cy + half
-        hc_x = fx0 if v_key == "left" else fx1
-        hc_y = fy0 if h_key == "bottom" else fy1
-        flange_x = x0 if ox < 0 else x1
-        face_x = x1 if ox < 0 else x0
-        flange_y = y0 if oy < 0 else y1
-        face_y = y1 if oy < 0 else y0
-
-        overlaps_corner = (
-            (face_x - hc_x) * ox <= 1e-9 and
-            (face_y - hc_y) * oy <= 1e-9
-        )
-
-        if not overlaps_corner:
-            notch = [
-                (x0, y0),
-                (x1, y0),
-                (x1, y1),
-                (x0, y1),
-            ]
-            msp.add_lwpolyline(notch, close=True, dxfattribs={"layer": "cut"})
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -878,22 +919,27 @@ def generate_panel_dxf(spec, outdir):
     face_w=fx1-fx0; face_h=fy1-fy0
 
     doc=ezdxf.new(dxfversion="R2010"); doc.units=1; msp=doc.modelspace()
-    for name,color in [("cut",1),("holes",2),("fastening",5),("bend",3)]:
+    for name,color in [("cut",1),("holes",2),("fastening",5),("bend",3),("text",6)]:
         if name not in doc.layers: doc.layers.add(name=name,color=color)
 
     notch_size = 2.0 * t
     pts=_blank_outline(bw,bh,sides,bd,ba2,notch_size,gap)
     msp.add_lwpolyline(pts,close=True,dxfattribs={"layer":"cut"})
 
+    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, bw, bh, sides, ba2)
     _draw_corner_reliefs(msp,fx0,fy0,fx1,fy1,bw,bh,sides,r,t,ba2)
     _draw_bend_lines(msp,fx0,fy0,fx1,fy1,bw,bh,sides,ba2)
 
-    for x,y in _hole_centers(fx0,fy0,face_w,face_h,
-                              spec.hole_dia,spec.pitch,spec.pattern,
-                              spec.stagger_angle,spec.margin):
+    face_holes = _hole_centers(
+        fx0, fy0, face_w, face_h,
+        spec.hole_dia, spec.pitch, spec.pattern,
+        spec.stagger_angle, spec.margin,
+    )
+    for x,y in face_holes:
         msp.add_circle((x,y),spec.hole_dia/2.0,dxfattribs={"layer":"holes"})
 
     _draw_fastening_slots(msp,spec,fx0,fy0,fx1,fy1,face_w,face_h,sides,bw,bh,ba2,bd)
+    _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, bw, bh, bd)
 
     os.makedirs(outdir,exist_ok=True)
     doc.saveas(os.path.join(outdir,f"{spec.panel_id}.dxf"))
