@@ -3,7 +3,8 @@ SCREENWALL MAKR — MASTER KNOWN TRUTHS REFERENCE
 Architectural Cassette Fabrication / Flat Pattern DXF Generator
 Machine: Artform Wall Machine / Ermaksan Speed Bend Pro
 ================================================================================
-Last compiled from: 6 source CSVs + verified bend math session
+Last compiled from: 6 source CSVs + verified bend math session; refreshed 2026-05-13
+  for stable L/J joinery, L flat-leg formula, bend-1 placement, and panel ID rules.
 Code repo: jkl-rgb/Screenwall-Makr
 
 
@@ -34,8 +35,13 @@ All formulas are for 90-degree air bending on a press brake.
     f1_flat (leg zone)  = nominal_f1 - 3×BD/2   [used for blank sizing only]
     CL-to-CL leg span   = nominal_f1 - BD        [bend2 CL → bend1 CL]
 
-  Flat zone lengths (L flange):
-    f1_flat             = nominal_f1 - BD/2
+  Flat zone lengths (L flange, for blank sizing / SideDef.f1):
+    f1_flat             = nominal_f1 - OSS + BA   (= F1 - OSS + BA, same as §8 L_total)
+    Equivalently:       nominal_f1 - BD/2 + BA/2   (NOT nominal_f1 - BD/2 alone;
+                        the old BD/2-only form was short by BA/2 per leg.)
+
+  Bend 1 CL placement (all active flanges, L and J):
+    Always BA/2 from the hard corner toward the blank (e.g. bottom: y = fy0 - BA/2).
 
 NOTE ON REFERENCE POINTS:
   - Our code measures flat zones to BEND CENTERLINES
@@ -186,6 +192,11 @@ EDGE COUNTS BY FLANGE CODE:
   L2LR          | C×4         | 4            | 4             | 8
   MIX J-tb/L-lr | B×4         | 8            | 4             | 12
 
+  NOTE — current DXF blank outline:
+    Bend relief is embedded in the main cut polyline at each active corner, so
+    the vertex count is higher than the abstract edge-count model (e.g. L4S
+    typically on the order of ~28 vertices). J4S verified dimensions are unchanged.
+
 VOID EDGE LENGTH RULE:
   J side at J+J corner:
     void_edge_length = f1 + BD
@@ -280,14 +291,20 @@ BACK J-RELIEF (J-Intersection — where two flange2 lips meet at the miter):
   Miter cuts for J-legs terminate at circumference of circle, not at sharp point
   This radius relief allows metal to stretch independently during second bend
 
-CURRENT CODE STATUS:
-  Corner reliefs ARE implemented in screenwall_generator.py:
-  - Square face notch drawn as a separate closed cut polyline at every active corner
-  - Notch size = OSS + 0.010 buffer
-  - Back J-relief drawn as a cut-layer circle at each J+J corner
-  - Circle diameter = 2 × T, centered at the bend2 CL intersection
-  - Micro-fillet at the notch inside corner is NOT implemented; the current
-    code draws a square notch only
+CURRENT CODE STATUS (corner / bend relief in outline):
+  - Reliefs are carried on the main blank outline (cut layer), not as separate
+    overlapping OSS squares in addition to the outline.
+  - Relief square for active corners: side = 2×T, centered on the intersection
+    of the two bend-1 centerlines (outside the void corner).
+  - J+J: miter geometry unchanged; inner path uses the verified five-point walk
+    around that square.
+  - Non–J+J (L+L, J+L, L+J): two square edges in the quadrant toward the hard
+    corner, then a short segment along the inner face line to HC (flush to HC,
+    no BD-wide jog).
+  - Optional J+J miter apex tweak: gap_override (see §5).
+  - Section 6 table above (OSS square, back J circle) remains the design intent
+    for shop documentation; separate _draw_corner_reliefs entities are not
+    emitted in the current build.
 
 
 ================================================================================
@@ -320,8 +337,8 @@ L FLANGE PHYSICAL DESCRIPTION:
 CORNER GEOMETRY BY FLANGE COMBINATION:
   J+J corner: void edges + miters on both flange ends
     Miter prevents adjacent lips from colliding when J returns fold back
-  L+L corner: square notch only, no miter needed
-    No lip return = no collision risk
+  L+L corner: no miter; bend-relief square on bend-1 CL intersection (perimeter),
+    not only a simple 2-edge abstract “square corner” sketch
   J+L or L+J corner: no miter; both sides terminate square at the corner
     The J flange is treated like an L at that corner because there is no
     opposing J return to collide with
@@ -372,17 +389,21 @@ BOOLEAN CORNER LOGIC:
     Non-J+J corners terminate square instead of using a miter
 
 PANEL TYPE CORNER SUMMARY:
-  L4S: square notch at every corner, no miter
+  L4S: bend relief on perimeter at every active corner; no J miter
   J4S: both adjacent J sides mitered at 45° nominal; optional gap_override
        opens the apex slightly
-  MIX (J/L): no miter; both sides terminate square at the corner
+  MIX (J/L): no miter at non-J+J corners; J+J miters where both sides are J
   2-side configs (J2TB/J2LR/L2TB/L2LR): square flange ends at active/inactive corners
 
-BEND RELIEF REQUIREMENT:
-  Face notch depth/size = OSS + 0.010 buffer
-  Back J-relief diameter = 2 × T
-  Back J-relief center = exact intersection of the two bend2 centerlines
-  Back J-relief only appears at J+J corners
+BEND RELIEF (current generator):
+  Perimeter-embedded square of side 2×T on bend-1 CL intersection; J+J keeps
+  miter + five-point path; non–J+J uses quadrant + bridge to HC.
+  (Legacy doc lines below — OSS + buffer face notch and separate back J circle —
+  are shop intent; not drawn as extra entities in current DXF output.)
+
+  Face notch depth/size = OSS + 0.010 buffer   [reference / optional future]
+  Back J-relief diameter = 2 × T                 [reference / optional future]
+  Back J-relief center = intersection of bend2 CLs at J+J
 
 
 ================================================================================
@@ -439,8 +460,11 @@ CONFIRMED MATCHES (no action needed):
   ✓ BA/2 = 0.147" — matches Fusion bend zone measurement
   ✓ bend2 CL from blank edge = 2.084" — exact match
   ✓ J+J corner miter geometry — matches factory drawing
-  ✓ 20-edge outline for J4S — verified against user coordinates
+  ✓ Abstract J4S outline = 20 segments — verified; DXF vertex count may exceed
+    this where perimeter bend relief adds points
   ✓ BA formula — matches Fusion formula exactly
+  ✓ L f1_flat in code = F1 - OSS + BA (§8); bend-1 CL = HC - BA/2 for L and J
+  ✓ Panel ID on text layer clears install slots when ID side has fastening
 
 MINOR DIFFERENCES (within tolerance, no action needed):
   ~ HC-HC: code=23.338" vs Fusion=23.36" (0.022" diff = rounding)
@@ -454,9 +478,9 @@ CURRENT CODE STATUS:
      - 3003, 5052, 6061, and steel all supported in MATERIAL_TABLE
      - nearest-thickness fallback still applies when no exact row exists
 
-  2. Corner reliefs implemented
-     - square face notch on cut layer
-     - circular back J-relief on cut layer at J+J corners only
+  2. Corner / bend relief on main blank outline (cut layer)
+     - 2×T square on bend-1 CL intersection; J+J miter path preserved
+     - non–J+J quadrant + bridge to hard corner
 
   3. Install slots implemented
      - layer: fastening
@@ -464,7 +488,16 @@ CURRENT CODE STATUS:
      - L slots use 2" end offsets with floating spacing near 12" o.c.
        and never above 13"
 
-  4. Origin convention difference (documentation only, no code change needed)
+  4. Panel ID (text layer)
+     - Stick-font LWPOLYLINEs (no DXF TEXT / external fonts)
+     - If the chosen ID flange is also in fastening_pair: anchor clears the
+       first slot (≥4" from flange start from fx0/fy0, and past first slot center
+       + half slot length + small gap); else mid-flange.
+
+  5. L flat leg f1_flat = F1 - OSS + BA in code (matches §8 L_total); bend-1
+     CL = HC - BA/2 for L and J.
+
+  6. Origin convention difference (documentation only)
      Known Truths: 0,0 at face corner
      Our DXF: 0,0 at blank corner (flanges extend inward)
      Both are correct — just different reference frames

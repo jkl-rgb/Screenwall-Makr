@@ -5,7 +5,8 @@ Full Engineering Reference for screenwall_generator.py
 Repo:     jkl-rgb/Screenwall-Makr (GitHub)
 App:      share.streamlit.io (main file: streamlit_app.py)
 Machine:  Artform Wall Machine / Ermaksan Speed Bend Pro
-Updated:  Reflects current code state including variable-edge outline
+Updated: 2026-05-13 — matches stable generator: L leg (F1−OSS+BA), unified bend-1
+  from HC, perimeter bend relief joinery, panel ID vs slots, gap_override on J+J.
 
 
 ================================================================================
@@ -96,6 +97,10 @@ Bend line positions:
   bend1 CL from HC         = BA/2 = 0.147"         [Fusion: 0.147" ✓]
   bend2 CL from HC         = HC - f2 = 1.834"      [Fusion: 1.823" ✓]
 
+L flange (single 90°, same material row as above):
+  f1_flat (blank sizing) = nominal_f1 - OSS + BA   (= nominal_f1 - BD/2 + BA/2)
+  Bend 1 CL from HC      = BA/2  (same placement rule as J)
+
 PHYSICAL DESCRIPTION:
   Bend 1 = leg fold, tight to face (small BA/2 offset)
   Bend 2 = J return lip fold (the return that forms the J channel)
@@ -128,6 +133,9 @@ EDGE COUNTS BY FLANGE CODE:
   L2LR          4 C-corners × 1 + 4 primary =  8 edges
   MIX J-tb/L-lr 4 B-corners × 2 + 4 primary = 12 edges
 
+  (Current DXF cut polylines carry bend-relief vertices at corners, so actual
+   vertex counts exceed this abstract edge model — e.g. L4S on the order of ~28.)
+
 KEY GEOMETRY RULES:
   J side at J+J corner:
     void_edge_length = f1 + BD
@@ -143,6 +151,12 @@ KEY GEOMETRY RULES:
   Purpose: allows flange2 (lip) to fold back without adjacent lips colliding.
   gap_override opens the J+J miter apex by shifting the hard-corner-side
   endpoints away from hc by gap/2 each; blank-edge endpoints stay anchored.
+
+NON–J+J ACTIVE CORNERS (L+L, J+L, L+J):
+  Bend relief: square of side 2×T centered on the intersection of the two
+  bend-1 centerlines; keep the two square edges in the quadrant toward the hard
+  corner, then bridge along the inner face line to HC (flush corner, no BD-wide
+  stair). J+J keeps the prior miter + five-point square path.
 
 J4S REFERENCE OUTLINE (20 points, CCW, blank coords with 0,0 at BL blank corner):
    1: (fx0-vl,  fy0)       BL close miter end / left primary end
@@ -180,15 +194,16 @@ Where:
 
   Layer       Color  Content
   ----------  -----  ----------------------------------------------------------
-  cut         1      Blank outline polygon (variable sides per flange config)
+  cut         1      Blank outline (variable vertex count; bend relief embedded)
   bend        3      Bend 1 and Bend 2 centerlines (individual line segments)
   holes       2      Perforation circles
   fastening   5      Install slots
+  text        6      Panel ID stick-font linework (no DXF TEXT entities)
 
 No bend_extent layer (removed).
 
 Bend line rules:
-  Bend 1 CL (leg): BA/2 outward from each hard corner — 4 line segments
+  Bend 1 CL: BA/2 from each hard corner toward the blank — same for L and J
   Bend 2 CL (lip, J only): f2 inward from blank edge — 4 line segments
   All bend lines span hard-corner-to-hard-corner width/height only
   (not across full blank width — they stop at the face zone boundaries)
@@ -230,7 +245,7 @@ PanelSpec fields:
 SideDef fields (computed by resolve_sides()):
   active  bool   Whether this side has a flange
   ftype   str    L or J
-  f1      float  Flat leg length (blank sizing: nominal - 3×BD/2 for J, - BD/2 for L)
+  f1      float  Flat leg for blank sizing: J = nominal - 3×BD/2; L = nominal - OSS + BA
   f2      float  Flat lip length (nominal - BD/2, J only; 0 for L)
 
 
@@ -263,15 +278,14 @@ Single letters L and J are normalized to L4S and J4S.
   _ba_half(r, k, t)     BA/2 = bend CL offset from hard corner
   _flat_lip(nom, r,k,t) f2 = nominal - BD/2
   _flat_leg_J(nom,r,k,t) f1 = nominal - 3×BD/2  (for blank sizing)
-  _flat_leg_L(nom,r,k,t) f1 = nominal - BD/2
+  _flat_leg_L(nom,r,k,t) f1 = nominal - OSS + BA  (= nominal - BD/2 + BA/2)
   resolve_sides(spec)   Returns dict of SideDef per side (top/bottom/left/right)
   _side_extra(sd)       f1+f2 per side — used for blank extension calculation
   flat_size(spec)       Returns (blank_w, blank_h)
 
-  _blank_outline(bw, bh, sides, bd)
-    Returns CCW polygon point list (variable length by flange config)
-    Uses _corner() internally for per-corner geometry
-    Corner function: _corner(hsd, vsd, hc_x, hc_y, ox, oy)
+  _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap=0.0)
+    Returns CCW polygon point list (variable length by flange config + relief)
+    notch_size: typically 2×T; gap: J+J miter apex only (gap_override / default)
 
   _draw_bend_lines(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
     Draws Bend 1 and Bend 2 centerlines on bend layer
@@ -281,8 +295,11 @@ Single letters L and J are normalized to L4S and J4S.
     Returns list of (x, y) perforation centers
 
   _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
-                        sides, blank_w, blank_h)
+                        sides, blank_w, blank_h, ba2, bd)
     Draws install slots on fastening layer
+
+  _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, ...)
+    Panel ID stick-font on text layer; clears slots when ID side has fastening
 
   generate_panel_dxf(spec, outdir)
     Main entry point. Creates DXF and saves to outdir/panel_id.dxf
@@ -353,11 +370,11 @@ margin clearance on all sides.
 11. INSTALL SLOTS
 ================================================================================
 
-J flanges: slots in lip zone (f2 area), centered at f2/2 from blank edge.
+J flanges: slots in lip zone; slot normal position from bend-1 / face holes + BD.
   Slot centers align with the primary face perforation rows/columns.
   Slot orientation is parallel to the side.
 
-L flanges: slots in leg zone (f1 area), centered at f1/2 from the face edge.
+L flanges: slots in leg zone, centered between blank edge and bend-1 CL.
   First and last slot are 2" from the flange ends.
   Intermediate spacing floats as close to 12" o.c. as possible,
   but never exceeds 13".
@@ -371,6 +388,19 @@ fastening_pair values:
 
 Legacy values:
   all / standard  all active sides
+
+
+================================================================================
+11a. PANEL ID (text layer)
+================================================================================
+
+  Stick-font LWPOLYLINEs only (no DXF TEXT / external fonts).
+  Preferred side: first active L in order top, right, bottom, left; else first
+  active side in that order.
+  If that side is also in fastening_pair (has install slots): anchor along the
+  flange at max(4" from flange start at fx0/fy0, first slot center + slot_length/2
+  + 0.125"); if that would exceed span−4", fall back to mid-flange. Constants:
+  PANEL_ID_CLEAR_FROM_FLANGE_END, PANEL_ID_CLEAR_PAST_SLOT in code.
 
 
 ================================================================================
@@ -411,7 +441,8 @@ Panel: 36"H × 24"W, J4S, flange1=2.0", flange2=2.25", t=0.1875", 3003
 
 All diffs = accumulated floating-point rounding, within fabrication tolerance.
 
-Outline edge counts (all verified, DXFs generate clean):
+Outline edge counts (abstract model; actual DXF vertices higher when corner
+  bend relief is embedded — e.g. L4S ~28 verts):
   J4S=20, L4S=12, J2TB=8, L2TB=8, J2LR=8, L2LR=8, MIX J-tb/L-lr=12
 
 
