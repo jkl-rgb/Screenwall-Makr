@@ -8,7 +8,8 @@ import ezdxf
 # Bend math verified against Fusion 360 (0.1875" 3003, r=0.125, k=0.33):
 #   BA  = (pi/2)*(r+k*t) = 0.294"  BA/2 = 0.147" (bend CL offset from HC) ✓
 #   BD  = 2*(r+t) - BA   = 0.331"
-#   f1  = nominal_f1 - 3*BD/2 = 1.503" → ex=f1+f2=3.587 → blank=31.174 ✓
+#   J f1 flat = nominal_f1 - 3*BD/2 = 1.503" → ex=f1+f2=3.587 → blank=31.174 ✓
+#   L f1 flat = F1 - OSS + BA (§8 L_total); not nominal - BD/2 (that is short by BA/2).
 #   f2  = nominal_f2 - BD/2   = 2.084" (blank edge to bend2 CL) ✓
 #   Hard corner at ex+BD = 3.918" from blank edge
 #   HC-HC = 31.174-2*3.918 = 23.338" ≈ Fusion 23.36" ✓
@@ -382,7 +383,11 @@ def _flat_leg_J(nominal, r, k, t):
 
 
 def _flat_leg_L(nominal, r, k, t):
-    return max(nominal - _bd(r,k,t)/2.0, 0.0)
+    """Developed single-bend leg (face O.D. to blank edge), §8: F1 - OSS + BA.
+
+    Equivalent to nominal - BD/2 + BA/2; the older nominal - BD/2 form was
+    short by BA/2 (~0.147\" here) vs Fusion / bend-tangent layout."""
+    return max(nominal - (r + t) + 2.0 * _ba_half(r, k, t), 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -698,22 +703,22 @@ def _hole_centers(face_x, face_y, face_w, face_h,
 def _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
     """Bend-1 centerline position for each active side.
 
-    J flanges keep the verified hard-corner minus BA/2 placement. L flanges use
-    their flat leg length directly from the blank edge, which matches the
-    outside-dimension convention used for the single-bend flange depth.
+    Fusion / Known Truths: bend1 CL is always BA/2 from the hard corner on that
+    edge (same for L and J). Flat leg *length* for blank sizing still differs
+    (_flat_leg_L vs _flat_leg_J); only the CL offset from HC is unified here.
     """
     pos = {}
     for name, sd in sides.items():
         if not sd.active:
             continue
         if name == "bottom":
-            pos[name] = sd.f1 if sd.ftype == "L" else (fy0 - ba2)
+            pos[name] = fy0 - ba2
         elif name == "top":
-            pos[name] = (blank_h - sd.f1) if sd.ftype == "L" else (fy1 + ba2)
+            pos[name] = fy1 + ba2
         elif name == "left":
-            pos[name] = sd.f1 if sd.ftype == "L" else (fx0 - ba2)
+            pos[name] = fx0 - ba2
         elif name == "right":
-            pos[name] = (blank_w - sd.f1) if sd.ftype == "L" else (fx1 + ba2)
+            pos[name] = fx1 + ba2
     return pos
 
 
