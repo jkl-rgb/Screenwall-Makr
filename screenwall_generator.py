@@ -529,20 +529,49 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
             x0, x1 = b1v - half, b1v + half
             y0, y1 = b1h - half, b1h + half
             flange_x = x0 if ox < 0 else x1
-            face_x = x1 if ox < 0 else x0
-            flange_y = y0 if oy < 0 else y1
-            face_y = y1 if oy < 0 else y0
-            # Walk the relief square in the same inward order for every active
-            # corner. J+J corners still differ because they add miter/void
-            # segments around this path; non-J+J corners should not flip the
-            # square and create the old outward dogleg.
-            notch_path = [
-                (flange_x, hc_y),
-                (flange_x, face_y),
-                (face_x, face_y),
-                (face_x, flange_y),
-                (hc_x, flange_y),
-            ]
+            if hsd.ftype == "J" and vsd.ftype == "J":
+                # J+J: keep the verified five-point walk around the relief square.
+                face_x = x1 if ox < 0 else x0
+                flange_y = y0 if oy < 0 else y1
+                face_y = y1 if oy < 0 else y0
+                notch_path = [
+                    (flange_x, hc_y),
+                    (flange_x, face_y),
+                    (face_x, face_y),
+                    (face_x, flange_y),
+                    (hc_x, flange_y),
+                ]
+            else:
+                # L+L, J+L, L+J: bend relief from the two bend-1 centerlines.
+                # Center a square (notch_size, typically 2*T = 0.375") on the
+                # intersection C of those lines (outside the void corner). Keep
+                # only the two square edges in the quadrant that opens toward the
+                # hard corner, then bridge along the inner face line to hc so the
+                # flange outline meets the hard corner without a BD-wide gap.
+                cx, cy = b1v, b1h
+                dx = hc_x - cx
+                dy = hc_y - cy
+                eps = 1e-9
+                if dx > eps and dy > eps:
+                    q = [(cx - half, cy + half), (cx + half, cy + half), (cx + half, cy - half)]
+                    bridge = (hc_x, cy - half)
+                elif dx > eps and dy < -eps:
+                    q = [(cx - half, cy - half), (cx + half, cy - half), (cx + half, cy + half)]
+                    bridge = (hc_x, cy + half)
+                elif dx < -eps and dy > eps:
+                    q = [(cx + half, cy + half), (cx - half, cy + half), (cx - half, cy - half)]
+                    bridge = (hc_x, cy - half)
+                else:
+                    q = [(cx + half, cy - half), (cx - half, cy - half), (cx - half, cy + half)]
+                    bridge = (hc_x, cy + half)
+
+                entry = (flange_x, hc_y)
+                notch_path = [entry]
+                if abs(entry[0] - q[0][0]) > 1e-9 or abs(entry[1] - q[0][1]) > 1e-9:
+                    notch_path.append(q[0])
+                notch_path.extend(q[1:])
+                if abs(notch_path[-1][0] - bridge[0]) > 1e-9 or abs(notch_path[-1][1] - bridge[1]) > 1e-9:
+                    notch_path.append(bridge)
 
         h_J = hsd.active and fh2 > 0
         h_L = hsd.active and not h_J
