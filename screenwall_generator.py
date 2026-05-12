@@ -3,9 +3,6 @@ import csv, math, os
 from dataclasses import dataclass
 from typing import Optional
 import ezdxf
-from ezdxf.enums import TextEntityAlignment
-from ezdxf.addons import text2path
-from ezdxf.fonts import fonts
 
 # ---------------------------------------------------------------------------
 # Bend math verified against Fusion 360 (0.1875" 3003, r=0.125, k=0.33):
@@ -68,6 +65,54 @@ GAUGE_MAP_STEEL    = {"16 ga": 0.0600, "14 ga": 0.0750, "11 ga": 0.1200}
 GAUGE_MAP_ALUMINUM = {"16 ga": 0.0625, "14 ga": 0.0800, "11 ga": 0.1250}
 FLANGE_CODES = {"L4S", "J4S", "L2TB", "J2TB", "L2LR", "J2LR", "MIX"}
 FASTENING_PAIR_VALUES = {"all", "standard", "tb", "lr", "t", "b", "l", "r", "none"}
+
+STICK_TEXT_HEIGHT = 0.5
+STICK_CHAR_WIDTH = 0.6
+STICK_CHAR_ADVANCE = 0.75
+STICK_LINE_SPACING = 0.18
+
+STICK_FONT = {
+    "A": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.6, 0.0)], [(0.0, 0.5), (0.6, 0.5)]],
+    "B": [[(0.0, 0.0), (0.0, 1.0), (0.5, 1.0), (0.6, 0.9), (0.6, 0.6), (0.5, 0.5), (0.0, 0.5)],
+          [(0.0, 0.5), (0.5, 0.5), (0.6, 0.4), (0.6, 0.1), (0.5, 0.0), (0.0, 0.0)]],
+    "C": [[(0.6, 1.0), (0.0, 1.0), (0.0, 0.0), (0.6, 0.0)]],
+    "D": [[(0.0, 0.0), (0.0, 1.0), (0.45, 1.0), (0.6, 0.85), (0.6, 0.15), (0.45, 0.0), (0.0, 0.0)]],
+    "E": [[(0.6, 1.0), (0.0, 1.0), (0.0, 0.0), (0.6, 0.0)], [(0.0, 0.5), (0.45, 0.5)]],
+    "F": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0)], [(0.0, 0.5), (0.45, 0.5)]],
+    "G": [[(0.6, 1.0), (0.0, 1.0), (0.0, 0.0), (0.6, 0.0), (0.6, 0.5), (0.35, 0.5)]],
+    "H": [[(0.0, 0.0), (0.0, 1.0)], [(0.6, 0.0), (0.6, 1.0)], [(0.0, 0.5), (0.6, 0.5)]],
+    "I": [[(0.0, 1.0), (0.6, 1.0)], [(0.3, 1.0), (0.3, 0.0)], [(0.0, 0.0), (0.6, 0.0)]],
+    "J": [[(0.0, 1.0), (0.6, 1.0), (0.6, 0.15), (0.45, 0.0), (0.15, 0.0), (0.0, 0.15)]],
+    "K": [[(0.0, 0.0), (0.0, 1.0)], [(0.6, 1.0), (0.0, 0.45), (0.6, 0.0)]],
+    "L": [[(0.0, 1.0), (0.0, 0.0), (0.6, 0.0)]],
+    "M": [[(0.0, 0.0), (0.0, 1.0), (0.3, 0.55), (0.6, 1.0), (0.6, 0.0)]],
+    "N": [[(0.0, 0.0), (0.0, 1.0), (0.6, 0.0), (0.6, 1.0)]],
+    "O": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.6, 0.0), (0.0, 0.0)]],
+    "P": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.6, 0.5), (0.0, 0.5)]],
+    "Q": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.6, 0.0), (0.0, 0.0)], [(0.35, 0.25), (0.65, -0.05)]],
+    "R": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.6, 0.5), (0.0, 0.5)], [(0.0, 0.5), (0.6, 0.0)]],
+    "S": [[(0.6, 1.0), (0.0, 1.0), (0.0, 0.5), (0.6, 0.5), (0.6, 0.0), (0.0, 0.0)]],
+    "T": [[(0.0, 1.0), (0.6, 1.0)], [(0.3, 1.0), (0.3, 0.0)]],
+    "U": [[(0.0, 1.0), (0.0, 0.0), (0.6, 0.0), (0.6, 1.0)]],
+    "V": [[(0.0, 1.0), (0.3, 0.0), (0.6, 1.0)]],
+    "W": [[(0.0, 1.0), (0.15, 0.0), (0.3, 0.45), (0.45, 0.0), (0.6, 1.0)]],
+    "X": [[(0.0, 1.0), (0.6, 0.0)], [(0.0, 0.0), (0.6, 1.0)]],
+    "Y": [[(0.0, 1.0), (0.3, 0.5), (0.6, 1.0)], [(0.3, 0.5), (0.3, 0.0)]],
+    "Z": [[(0.0, 1.0), (0.6, 1.0), (0.0, 0.0), (0.6, 0.0)]],
+    "0": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.6, 0.0), (0.0, 0.0)], [(0.0, 0.0), (0.6, 1.0)]],
+    "1": [[(0.3, 0.0), (0.3, 1.0)], [(0.15, 0.8), (0.3, 1.0), (0.45, 1.0)], [(0.1, 0.0), (0.5, 0.0)]],
+    "2": [[(0.0, 0.8), (0.15, 1.0), (0.45, 1.0), (0.6, 0.8), (0.6, 0.6), (0.0, 0.0), (0.6, 0.0)]],
+    "3": [[(0.0, 1.0), (0.6, 1.0), (0.35, 0.5), (0.6, 0.5), (0.6, 0.0), (0.0, 0.0)]],
+    "4": [[(0.6, 0.0), (0.6, 1.0)], [(0.0, 0.55), (0.6, 0.55)], [(0.0, 0.55), (0.45, 1.0)]],
+    "5": [[(0.6, 1.0), (0.0, 1.0), (0.0, 0.5), (0.5, 0.5), (0.6, 0.4), (0.6, 0.0), (0.0, 0.0)]],
+    "6": [[(0.6, 1.0), (0.1, 1.0), (0.0, 0.85), (0.0, 0.0), (0.6, 0.0), (0.6, 0.5), (0.0, 0.5)]],
+    "7": [[(0.0, 1.0), (0.6, 1.0), (0.2, 0.0)]],
+    "8": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.6, 0.0), (0.0, 0.0)], [(0.0, 0.5), (0.6, 0.5)]],
+    "9": [[(0.6, 0.5), (0.0, 0.5), (0.0, 1.0), (0.6, 1.0), (0.6, 0.0), (0.1, 0.0)]],
+    "_": [[(0.0, 0.0), (0.6, 0.0)]],
+    "-": [[(0.1, 0.5), (0.5, 0.5)]],
+    " ": [],
+}
 
 
 @dataclass
@@ -832,28 +877,52 @@ def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, b
     }
 
 
+def _stroke_glyph(char):
+    return STICK_FONT.get(char.upper(), [[(0.0, 0.0), (0.6, 1.0)], [(0.0, 1.0), (0.6, 0.0)]])
+
+
+def _draw_stick_text(msp, text, x, y, height, rotation_deg, layer):
+    scale = height
+    advance = STICK_CHAR_ADVANCE * scale
+    width = STICK_CHAR_WIDTH * scale
+    total_width = max(width, len(text) * advance - (advance - width))
+    x_offset = -total_width / 2.0
+    y_offset = -height / 2.0
+    theta = math.radians(rotation_deg)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+
+    cursor_x = 0.0
+    for char in text:
+        glyph = _stroke_glyph(char)
+        for stroke in glyph:
+            pts = []
+            for px, py in stroke:
+                lx = x_offset + cursor_x + px * scale
+                ly = y_offset + py * scale
+                rx = x + (lx * cos_t - ly * sin_t)
+                ry = y + (lx * sin_t + ly * cos_t)
+                pts.append((rx, ry))
+            if len(pts) >= 2:
+                msp.add_lwpolyline(pts, close=False, dxfattribs={"layer": layer})
+        cursor_x += advance
+
+
 def _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd):
     slot_length = spec.slot_length if spec.slot_length is not None else (spec.fastener_dia + INSTALL_SLOT_EXTRA)
     anchor = _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length)
     if not anchor:
         return
 
-    font_face = fonts.FontFace(filename="romans.shx")
-    matrix = (
-        ezdxf.math.Matrix44.z_rotate(math.radians(anchor["rotation"]))
-        @ ezdxf.math.Matrix44.translate(anchor["x"], anchor["y"], 0.0)
-    )
-    for path in text2path.make_paths_from_str(
+    _draw_stick_text(
+        msp,
         spec.panel_id,
-        font=font_face,
-        size=0.5,
-        align=TextEntityAlignment.MIDDLE_CENTER,
-        m=matrix,
-    ):
-        for sub_path in path.sub_paths():
-            points = [(v.x, v.y) for v in sub_path.flattening(distance=0.01)]
-            if len(points) >= 2:
-                msp.add_lwpolyline(points, close=False, dxfattribs={"layer": "text"})
+        anchor["x"],
+        anchor["y"],
+        STICK_TEXT_HEIGHT,
+        anchor["rotation"],
+        "text",
+    )
 
 
 def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
