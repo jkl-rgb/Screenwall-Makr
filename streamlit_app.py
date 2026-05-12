@@ -103,14 +103,6 @@ st.markdown("""
     .artform-header {
         padding-top: 0.35rem;
     }
-    .artform-kicker {
-        font-size: 0.82rem;
-        font-weight: 500;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #6e6e73;
-        margin-bottom: 0.65rem;
-    }
     .artform-title {
         font-size: clamp(2.3rem, 5vw, 4rem);
         line-height: 1.02;
@@ -174,7 +166,6 @@ with header_left:
     st.markdown(
         """
         <div class="artform-header">
-            <div class="artform-kicker">Artform</div>
             <h1 class="artform-title">Screenwall Makr</h1>
             <div class="artform-subtitle">
                 Flat pattern DXF generator for perforated screenwall panels,

@@ -411,7 +411,7 @@ def flat_size(spec):
 #   any side without miter : f1+f2+BD = el+BD  (path runs straight to blank)
 # ---------------------------------------------------------------------------
 
-def _blank_outline(blank_w, blank_h, sides, bd, gap=0.0):
+def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
     """Build CCW blank outline polygon. See module docstring above for the
     per-corner miter rule and the resulting edge counts.
 
@@ -431,6 +431,7 @@ def _blank_outline(blank_w, blank_h, sides, bd, gap=0.0):
 
     fx0=el+bd;    fy0=eb+bd
     fx1=bw-er-bd; fy1=bh-et-bd
+    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
 
     def _corner_params(this_sd, other_sd):
         """Effective (void_edge_length, miter_depth) for THIS side at the corner
@@ -452,7 +453,7 @@ def _blank_outline(blank_w, blank_h, sides, bd, gap=0.0):
     fh1_tl, fh2_tl = _corner_params(st, sl);  fv1_tl, fv2_tl = _corner_params(sl, st)
 
     def _corner(hsd, vsd, hc_x, hc_y, ox, oy, arrive_vert,
-                fh1, fh2, fv1, fv2):
+                fh1, fh2, fv1, fv2, b1h, b1v):
         """Corner point sequence AFTER the arriving primary point, in CCW order.
         h_J / v_J classify by 'miter present at this corner', not by side type:
         a J flange at a non-J+J corner is treated as L here (no miter, no
@@ -474,6 +475,28 @@ def _blank_outline(blank_w, blank_h, sides, bd, gap=0.0):
             v_void = (v_void[0] + ox*half, v_void[1])
             h_void = (h_void[0],           h_void[1] + oy*half)
 
+        notch_path = None
+        if hsd.active and vsd.active:
+            half = notch_size / 2.0
+            x0, x1 = b1v - half, b1v + half
+            y0, y1 = b1h - half, b1h + half
+            flange_x = x0 if ox < 0 else x1
+            face_x = x1 if ox < 0 else x0
+            flange_y = y0 if oy < 0 else y1
+            face_y = y1 if oy < 0 else y0
+            overlaps_corner = (
+                (face_x - hc_x) * ox <= 1e-9 and
+                (face_y - hc_y) * oy <= 1e-9
+            )
+            if overlaps_corner:
+                notch_path = [
+                    (flange_x, hc_y),
+                    (flange_x, face_y),
+                    (face_x, face_y),
+                    (face_x, flange_y),
+                    (hc_x, flange_y),
+                ]
+
         h_J = hsd.active and fh2 > 0
         h_L = hsd.active and not h_J
         v_J = vsd.active and fv2 > 0
@@ -487,6 +510,8 @@ def _blank_outline(blank_w, blank_h, sides, bd, gap=0.0):
             if not hsd.active and vsd.active:
                 return [v_void, hc] if v_J else [hc]
             # Both active
+            if notch_path and v_J and h_J:
+                return [v_void, *notch_path, h_void, h_blank]
             if v_J and h_J:   return [v_void, hc, h_void, h_blank]
             if v_J and h_L:   return [v_void, hc, h_blank]
             if v_L and h_J:   return [hc, h_void, h_blank]
@@ -499,15 +524,17 @@ def _blank_outline(blank_w, blank_h, sides, bd, gap=0.0):
             if not hsd.active and vsd.active:
                 return [hc, v_void, v_blank] if v_J else [hc, v_void]
             # Both active
+            if notch_path and h_J and v_J:
+                return [h_void, *reversed(notch_path), v_void, v_blank]
             if h_J and v_J:   return [h_void, hc, v_void, v_blank]
             if h_J and v_L:   return [h_void, hc, v_void]
             if h_L and v_J:   return [hc, v_void, v_blank]
             return             [hc, v_void]
 
-    bl = _corner(sb, sl, fx0, fy0, -1, -1, True,  fh1_bl, fh2_bl, fv1_bl, fv2_bl)
-    br = _corner(sb, sr, fx1, fy0, +1, -1, False, fh1_br, fh2_br, fv1_br, fv2_br)
-    tr = _corner(st, sr, fx1, fy1, +1, +1, True,  fh1_tr, fh2_tr, fv1_tr, fv2_tr)
-    tl = _corner(st, sl, fx0, fy1, -1, +1, False, fh1_tl, fh2_tl, fv1_tl, fv2_tl)
+    bl = _corner(sb, sl, fx0, fy0, -1, -1, True,  fh1_bl, fh2_bl, fv1_bl, fv2_bl, bend1.get("bottom", fy0), bend1.get("left", fx0))
+    br = _corner(sb, sr, fx1, fy0, +1, -1, False, fh1_br, fh2_br, fv1_br, fv2_br, bend1.get("bottom", fy0), bend1.get("right", fx1))
+    tr = _corner(st, sr, fx1, fy1, +1, +1, True,  fh1_tr, fh2_tr, fv1_tr, fv2_tr, bend1.get("top", fy1), bend1.get("right", fx1))
+    tl = _corner(st, sl, fx0, fy1, -1, +1, False, fh1_tl, fh2_tl, fv1_tl, fv2_tl, bend1.get("top", fy1), bend1.get("left", fx0))
 
     def _arr_vert(vsd, hc_x, hc_y, ox, oy, fv1, fv2):
         if not vsd.active: return (hc_x, hc_y)
@@ -702,8 +729,34 @@ def _add_slot(msp, cx, cy, width, length, orientation, layer):
     msp.add_lwpolyline(pts, format="xyb", close=True, dxfattribs={"layer": layer})
 
 
+def _j_slot_normal_center(side_name, bend1, face_holes, bd):
+    if not face_holes:
+        return bend1[side_name]
+
+    if side_name == "left":
+        nearest = min(x for x, _ in face_holes)
+        return bend1[side_name] - ((nearest - bend1[side_name]) + bd)
+    if side_name == "right":
+        nearest = max(x for x, _ in face_holes)
+        return bend1[side_name] + ((bend1[side_name] - nearest) + bd)
+    if side_name == "bottom":
+        nearest = min(y for _, y in face_holes)
+        return bend1[side_name] - ((nearest - bend1[side_name]) + bd)
+
+    nearest = max(y for _, y in face_holes)
+    return bend1[side_name] + ((bend1[side_name] - nearest) + bd)
+
+
+def _holes_on_same_row(face_holes, y, tol=1e-6):
+    return [(x, hy) for x, hy in face_holes if abs(hy - y) <= tol]
+
+
+def _holes_on_same_col(face_holes, x, tol=1e-6):
+    return [(hx, y) for hx, y in face_holes if abs(hx - x) <= tol]
+
+
 def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
-                          sides, blank_w, blank_h, ba2):
+                          sides, blank_w, blank_h, ba2, bd):
     active=_fastening_sides(spec,sides)
     if not active: return
     bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
@@ -717,8 +770,12 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
         if sn in ("bottom","top"):
             is_b=(sn=="bottom")
             if sd.ftype=="J":
-                hy=sd.f2/2.0 if is_b else blank_h-sd.f2/2.0
                 xs=_aligned_positions([c[0] for c in face_holes])
+                for px in xs:
+                    col_holes = _holes_on_same_col(face_holes, px)
+                    hy = _j_slot_normal_center(sn, bend1, col_holes or face_holes, bd)
+                    _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
+                continue
             else:
                 hy=(bend1[sn]/2.0) if is_b else ((blank_h + bend1[sn]) / 2.0)
                 xs=[fx0+p for p in _l_positions(face_w)]
@@ -727,8 +784,12 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
         else:
             is_l=(sn=="left")
             if sd.ftype=="J":
-                hx=sd.f2/2.0 if is_l else blank_w-sd.f2/2.0
                 ys=_aligned_positions([c[1] for c in face_holes])
+                for py in ys:
+                    row_holes = _holes_on_same_row(face_holes, py)
+                    hx = _j_slot_normal_center(sn, bend1, row_holes or face_holes, bd)
+                    _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
+                continue
             else:
                 hx=(bend1[sn]/2.0) if is_l else ((blank_w + bend1[sn]) / 2.0)
                 ys=[fy0+p for p in _l_positions(face_h)]
@@ -743,8 +804,8 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
 #     - Centered on the intersection of the two bend1 centerlines
 #     - Sized to extend one material thickness from that center in both axes
 #       (total square size = 2*T), per current shop-floor preference
-#     - If the notch overlaps the perimeter corner, emit only the clipped
-#       notch path so the cut reads as a continuous perimeter component
+#     - When the relief overlaps the perimeter corner, it is now carried by the
+#       main outline path instead of being drawn as a separate cut stub
 #     - Otherwise fall back to the closed square relief
 # ---------------------------------------------------------------------------
 def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t, ba2):
@@ -787,16 +848,7 @@ def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t,
             (face_y - hc_y) * oy <= 1e-9
         )
 
-        if overlaps_corner:
-            notch = [
-                (flange_x, hc_y),
-                (flange_x, face_y),
-                (face_x, face_y),
-                (face_x, flange_y),
-                (hc_x, flange_y),
-            ]
-            msp.add_lwpolyline(notch, close=False, dxfattribs={"layer": "cut"})
-        else:
+        if not overlaps_corner:
             notch = [
                 (x0, y0),
                 (x1, y0),
@@ -829,7 +881,8 @@ def generate_panel_dxf(spec, outdir):
     for name,color in [("cut",1),("holes",2),("fastening",5),("bend",3)]:
         if name not in doc.layers: doc.layers.add(name=name,color=color)
 
-    pts=_blank_outline(bw,bh,sides,bd,gap)
+    notch_size = 2.0 * t
+    pts=_blank_outline(bw,bh,sides,bd,ba2,notch_size,gap)
     msp.add_lwpolyline(pts,close=True,dxfattribs={"layer":"cut"})
 
     _draw_corner_reliefs(msp,fx0,fy0,fx1,fy1,bw,bh,sides,r,t,ba2)
@@ -840,7 +893,7 @@ def generate_panel_dxf(spec, outdir):
                               spec.stagger_angle,spec.margin):
         msp.add_circle((x,y),spec.hole_dia/2.0,dxfattribs={"layer":"holes"})
 
-    _draw_fastening_slots(msp,spec,fx0,fy0,fx1,fy1,face_w,face_h,sides,bw,bh,ba2)
+    _draw_fastening_slots(msp,spec,fx0,fy0,fx1,fy1,face_w,face_h,sides,bw,bh,ba2,bd)
 
     os.makedirs(outdir,exist_ok=True)
     doc.saveas(os.path.join(outdir,f"{spec.panel_id}.dxf"))
