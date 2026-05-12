@@ -10,6 +10,7 @@ from screenwall_generator import INSTALL_SLOT_EXTRA, parse_csv, generate_panel_d
 
 st.set_page_config(page_title="Screenwall Makr", layout="wide")
 LOGO_PATH = Path(__file__).parent / "assets" / "artform_logo.png"
+APP_BUILD = "deploy-check-2026-05-12-1549"
 
 
 def _inline_image_base64(path: Path) -> str:
@@ -119,6 +120,12 @@ st.markdown("""
         font-weight: 300;
         color: #6e6e73;
     }
+    .artform-build {
+        margin-top: 0.8rem;
+        font-size: 0.82rem;
+        letter-spacing: 0.02em;
+        color: #8e8e93;
+    }
     .artform-rule {
         height: 1px;
         background: linear-gradient(90deg, rgba(29,29,31,0.14), rgba(29,29,31,0.05));
@@ -164,7 +171,7 @@ logo_b64 = _inline_image_base64(LOGO_PATH) if LOGO_PATH.exists() else None
 header_left, header_right = st.columns([4.8, 0.8], vertical_alignment="top")
 with header_left:
     st.markdown(
-        """
+        f"""
         <div class="artform-header">
             <h1 class="artform-title">Screenwall Makr</h1>
             <div class="artform-subtitle">
@@ -172,6 +179,7 @@ with header_left:
                 with bend-aware flange geometry, install-slot placement, and
                 fabrication-ready CSV import controls.
             </div>
+            <div class="artform-build">Build: {APP_BUILD}</div>
         </div>
         """,
         unsafe_allow_html=True,
