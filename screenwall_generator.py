@@ -72,6 +72,10 @@ STICK_CHAR_WIDTH = 0.6
 STICK_CHAR_ADVANCE = 0.75
 STICK_LINE_SPACING = 0.18
 
+# Panel ID must clear install slots (e.g. 2" margin + ~0.75" slot from flange end).
+PANEL_ID_CLEAR_FROM_FLANGE_END = 4.0  # inches along flange from start (fx0 / fy0)
+PANEL_ID_CLEAR_PAST_SLOT = 0.125    # past slot end along flange before text center
+
 STICK_FONT = {
     "A": [[(0.0, 0.0), (0.0, 1.0), (0.6, 1.0), (0.6, 0.0)], [(0.0, 0.5), (0.6, 0.5)]],
     "B": [[(0.0, 0.0), (0.0, 1.0), (0.5, 1.0), (0.6, 0.9), (0.6, 0.6), (0.5, 0.5), (0.0, 0.5)],
@@ -852,12 +856,24 @@ def _holes_on_same_col(face_holes, x, tol=1e-6):
     return [(hx, y) for hx, y in face_holes if abs(hx - x) <= tol]
 
 
-def _first_clockwise_position(side_name, positions):
-    if not positions:
-        return None
-    if side_name in ("top", "left"):
-        return min(positions)
-    return max(positions)
+def _panel_id_along_coordinate(start, span, slot_centers, has_slots, slot_length):
+    """Along-flange coordinate (x for top/bottom, y for left/right) for panel ID center.
+
+    When this side has fastening slots, keep the label past the first slot (from
+    the low-x / low-y flange start) and at least PANEL_ID_CLEAR_FROM_FLANGE_END
+    from that end so it does not sit in the first slot (2\" margin + slot).
+    Otherwise center on the flange span.
+    """
+    if not has_slots or not slot_centers:
+        return start + span / 2.0
+    first = min(slot_centers)
+    past_first = first + slot_length / 2.0 + PANEL_ID_CLEAR_PAST_SLOT
+    from_corner = start + PANEL_ID_CLEAR_FROM_FLANGE_END
+    opp_margin = start + span - PANEL_ID_CLEAR_FROM_FLANGE_END
+    along = max(from_corner, past_first)
+    if along > opp_margin:
+        return start + span / 2.0
+    return along
 
 
 def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length):
@@ -865,6 +881,7 @@ def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, b
     if not side_name:
         return None
 
+    fast_sides = set(_fastening_sides(spec, sides))
     sd = sides[side_name]
     if side_name in ("top", "bottom"):
         along_positions = (
@@ -872,16 +889,18 @@ def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, b
             if sd.ftype == "J"
             else [fx0 + p for p in _l_positions(face_w)]
         )
-        first_pos = _first_clockwise_position(side_name, along_positions) or ((fx0 + fx0 + face_w) / 2.0)
+        has_slots = side_name in fast_sides
+        along_x = _panel_id_along_coordinate(
+            fx0, face_w, along_positions, has_slots, slot_length
+        )
         normal = (
             (sd.f2 / 2.0) if side_name == "bottom" else (blank_h - sd.f2 / 2.0)
             if sd.ftype == "J"
             else ((bend1[side_name] / 2.0) if side_name == "bottom" else ((blank_h + bend1[side_name]) / 2.0))
         )
-        direction = 1.0 if side_name == "top" else -1.0
         return {
             "side": side_name,
-            "x": first_pos + direction * (slot_length / 2.0),
+            "x": along_x,
             "y": normal,
             "rotation": 0.0,
         }
@@ -891,17 +910,19 @@ def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, b
         if sd.ftype == "J"
         else [fy0 + p for p in _l_positions(face_h)]
     )
-    first_pos = _first_clockwise_position(side_name, along_positions) or ((fy0 + fy0 + face_h) / 2.0)
+    has_slots = side_name in fast_sides
+    along_y = _panel_id_along_coordinate(
+        fy0, face_h, along_positions, has_slots, slot_length
+    )
     normal = (
         (sd.f2 / 2.0) if side_name == "left" else (blank_w - sd.f2 / 2.0)
         if sd.ftype == "J"
         else ((bend1[side_name] / 2.0) if side_name == "left" else ((blank_w + bend1[side_name]) / 2.0))
     )
-    direction = 1.0 if side_name == "left" else -1.0
     return {
         "side": side_name,
         "x": normal,
-        "y": first_pos + direction * (slot_length / 2.0),
+        "y": along_y,
         "rotation": 90.0,
     }
 
