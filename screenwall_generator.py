@@ -543,23 +543,48 @@ def _add_line(msp, x0, y0, x1, y1, layer):
 def _hole_centers(face_x, face_y, face_w, face_h,
                   hole_dia, pitch, pattern, stagger_angle, margin):
     centers = []
-    hr = hole_dia/2.0
-    sx,sy = face_x+margin+hr, face_y+margin+hr
-    mx,my = face_x+face_w-margin-hr, face_y+face_h-margin-hr
-    if pattern == "straight":
-        y=sy
-        while y<=my+1e-9:
-            x=sx
-            while x<=mx+1e-9: centers.append((x,y)); x+=pitch
-            y+=pitch
+    hr = hole_dia / 2.0
+    min_x = face_x + margin + hr
+    max_x = face_x + face_w - margin - hr
+    min_y = face_y + margin + hr
+    max_y = face_y + face_h - margin - hr
+    usable_x = max_x - min_x
+    usable_y = max_y - min_y
+    if usable_x < -1e-9 or usable_y < -1e-9:
         return centers
-    alpha=math.radians(stagger_angle)
-    row_step=pitch*math.sin(alpha); col_off=pitch*math.cos(alpha)
-    row,y=0,sy
-    while y<=my+1e-9:
-        x=sx+(col_off if row%2 else 0.0)
-        while x<=mx+1e-9: centers.append((x,y)); x+=pitch
-        y+=row_step; row+=1
+
+    def _count(span, step):
+        if span < -1e-9:
+            return 0
+        return max(1, int(math.floor(span / step + 1e-9)) + 1)
+
+    if pattern == "straight":
+        row_step = pitch
+        col_off = 0.0
+    else:
+        alpha = math.radians(stagger_angle)
+        row_step = pitch * math.sin(alpha)
+        col_off = pitch * math.cos(alpha)
+
+    row_count = _count(usable_y, row_step)
+    used_y = row_step * (row_count - 1)
+    start_y = min_y + max(0.0, (usable_y - used_y) / 2.0)
+
+    even_count = _count(usable_x, pitch)
+    even_right = pitch * (even_count - 1)
+    odd_count = _count(usable_x - col_off, pitch) if col_off <= usable_x + 1e-9 else 0
+    odd_right = (col_off + pitch * (odd_count - 1)) if odd_count else float("-inf")
+    field_right = max(even_right, odd_right)
+    start_x = min_x + max(0.0, (usable_x - field_right) / 2.0)
+
+    for row in range(row_count):
+        y = start_y + row * row_step
+        offset = col_off if row % 2 else 0.0
+        col_count = odd_count if row % 2 else even_count
+        for col in range(col_count):
+            x = start_x + offset + col * pitch
+            if x <= max_x + 1e-9:
+                centers.append((x, y))
     return centers
 
 
@@ -714,24 +739,19 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
 # ---------------------------------------------------------------------------
 # Section 6 corner reliefs
 #
-#   Square face-corner notch (OSS = R + T, +0.010" buffer):
-#     - One small closed rectangle per active corner, on the "cut" layer
-#     - Centered on the intersection of the two bend1 centerlines so the
-#       relief actually clears the bend-zone collision/pucker point
-#     - This keeps the relief in the bend intersection rather than burying it
-#       in the finished face area
-#
-#   Circular back J-relief (diameter = 2 * T):
-#     - One circle per J+J corner, on the "cut" layer
-#     - Centered at the intersection of the two secondary (bend2) centerlines
-#     - Allows the two return lips to stretch independently during second bend
+#   Square face-corner notch:
+#     - Centered on the intersection of the two bend1 centerlines
+#     - Sized to extend one material thickness from that center in both axes
+#       (total square size = 2*T), per current shop-floor preference
+#     - If the notch overlaps the perimeter corner, emit only the clipped
+#       notch path so the cut reads as a continuous perimeter component
+#     - Otherwise fall back to the closed square relief
 # ---------------------------------------------------------------------------
 def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t, ba2):
     if t <= 0:
         return
 
-    oss        = r + t
-    notch_size = oss + RELIEF_BUFFER
+    notch_size = 2.0 * t
     bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
 
     sl = sides["left"];  sr = sides["right"]
@@ -753,19 +773,37 @@ def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t,
         cx = bend1[v_key]
         cy = bend1[h_key]
         half = notch_size / 2.0
-        notch = [
-            (cx - half, cy - half),
-            (cx + half, cy - half),
-            (cx + half, cy + half),
-            (cx - half, cy + half),
-        ]
-        msp.add_lwpolyline(notch, close=True, dxfattribs={"layer": "cut"})
+        x0, x1 = cx - half, cx + half
+        y0, y1 = cy - half, cy + half
+        hc_x = fx0 if v_key == "left" else fx1
+        hc_y = fy0 if h_key == "bottom" else fy1
+        flange_x = x0 if ox < 0 else x1
+        face_x = x1 if ox < 0 else x0
+        flange_y = y0 if oy < 0 else y1
+        face_y = y1 if oy < 0 else y0
 
-        # Back J-relief — only at J+J corners, centered at bend2 CL intersection
-        if hsd.ftype == "J" and vsd.ftype == "J" and hsd.f2 > 0 and vsd.f2 > 0:
-            cx = vsd.f2 if ox < 0 else (blank_w - vsd.f2)
-            cy = hsd.f2 if oy < 0 else (blank_h - hsd.f2)
-            msp.add_circle((cx, cy), t, dxfattribs={"layer": "cut"})
+        overlaps_corner = (
+            (face_x - hc_x) * ox <= 1e-9 and
+            (face_y - hc_y) * oy <= 1e-9
+        )
+
+        if overlaps_corner:
+            notch = [
+                (flange_x, hc_y),
+                (flange_x, face_y),
+                (face_x, face_y),
+                (face_x, flange_y),
+                (hc_x, flange_y),
+            ]
+            msp.add_lwpolyline(notch, close=False, dxfattribs={"layer": "cut"})
+        else:
+            notch = [
+                (x0, y0),
+                (x1, y0),
+                (x1, y1),
+                (x0, y1),
+            ]
+            msp.add_lwpolyline(notch, close=True, dxfattribs={"layer": "cut"})
 
 
 # ---------------------------------------------------------------------------
