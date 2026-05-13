@@ -44,12 +44,19 @@ MIX_EXTRA_HEADERS = [
     "right_type", "right_f1", "right_f2",
 ]
 
+RT_EXTRA_HEADERS = [
+    "rt_opposing_edge",
+    "rt_leg_left",
+    "rt_leg_right",
+]
+
 STANDARD_EXAMPLE = [
     "example_L4S", "36", "24", "0.1875", "aluminum", "3003",
     "L4S", "2.0", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
     "", "", "", "", "", "", "", "", "", "", "", "",
+    "", "", "",
 ]
 
 MIX_EXAMPLE = [
@@ -61,6 +68,7 @@ MIX_EXAMPLE = [
     "J", "2.0", "2.25",   # bottom
     "L", "2.0", "",       # left
     "L", "2.0", "",       # right
+    "", "", "",
 ]
 
 # Steel example: thickness given as a gauge string ("14 ga"). material=steel is
@@ -73,9 +81,19 @@ STEEL_EXAMPLE = [
     "0.75", "1.25", "staggered", "tb", "0.1875", "0.75",
     "60.0", "1.25",
     "", "", "", "", "", "", "", "", "", "", "", "",
+    "", "", "",
 ]
 
-ALL_HEADERS = STANDARD_HEADERS + MIX_EXTRA_HEADERS
+RT_EXAMPLE = [
+    "example_RT4S", "36", "26", "0.1875", "aluminum", "3003",
+    "RT4S", "2.0", "",
+    "0.75", "1.25", "staggered", "tb", "0.1875", "",
+    "60.0", "1.25",
+    "", "", "", "", "", "", "", "", "", "", "", "",
+    "top", "24", "30",
+]
+
+ALL_HEADERS = STANDARD_HEADERS + MIX_EXTRA_HEADERS + RT_EXTRA_HEADERS
 
 # Keep the downloadable template data-only. Spreadsheet apps can rewrite
 # comment-prefixed instruction rows in ways that break subsequent uploads.
@@ -83,6 +101,7 @@ template_csv = ",".join(ALL_HEADERS) + "\n"
 template_csv += ",".join(STANDARD_EXAMPLE) + "\n"
 template_csv += ",".join(MIX_EXAMPLE) + "\n"
 template_csv += ",".join(STEEL_EXAMPLE) + "\n"
+template_csv += ",".join(RT_EXAMPLE) + "\n"
 
 # ---------------------------------------------------------------------------
 # UI
@@ -203,6 +222,8 @@ with st.expander("Flange code reference", expanded=False):
 | `J2TB` | J-flange, top + bottom only |
 | `L2LR` | L-flange, left + right only |
 | `J2LR` | J-flange, left + right only |
+| `RT4S` | Right trapezoid, L-flange all sides — parallel top or bottom, vertical legs, angled opposite edge |
+| `RT4J` | Right trapezoid, J-flange all sides (same `flange2_depth` as `J4S`) |
 | `MIX` | Per-side type and depth — fill in the `top_*`, `bottom_*`, `left_*`, `right_*` columns |
 
 **Notes**
@@ -218,6 +239,9 @@ with st.expander("Flange code reference", expanded=False):
 - Accepted length aliases on import: `fastener_slot_length`, `install_slot_length`.
 - For `MIX`: set `top_type` / `bottom_type` / `left_type` / `right_type` to `L` or `J`.
   Set `*_f1` (leg depth) and `*_f2` (return lip, J only). A side with `*_f1 = 0` is a straight cut.
+- For `RT4S` / `RT4J`: set `rt_opposing_edge` to `top` or `bottom` (which parallel edge is straight in plan).
+  Set `rt_leg_left` and `rt_leg_right` to the vertical face heights at the left and right hard corners
+  (inches). `width` is still the parallel span between the vertical legs. Leave `rt_*` blank for other codes.
 """)
 
 with st.expander("Material & gauge rules (READ FIRST)", expanded=False):

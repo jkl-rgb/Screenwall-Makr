@@ -64,7 +64,10 @@ INSTALL_SLOT_EXTRA = 0.50  # slot length = fastener_dia + 0.50"
 # common nominal sheet decimals that align with table keys (0.0625 / 0.080 / 0.125).
 GAUGE_MAP_STEEL    = {"16 ga": 0.0600, "14 ga": 0.0750, "11 ga": 0.1200}
 GAUGE_MAP_ALUMINUM = {"16 ga": 0.0625, "14 ga": 0.0800, "11 ga": 0.1250}
-FLANGE_CODES = {"L4S", "J4S", "L2TB", "J2TB", "L2LR", "J2LR", "MIX"}
+FLANGE_CODES = {
+    "L4S", "J4S", "L2TB", "J2TB", "L2LR", "J2LR", "MIX",
+    "RT4S", "RT4J",
+}
 FASTENING_PAIR_VALUES = {"all", "standard", "tb", "lr", "t", "b", "l", "r", "none"}
 
 STICK_TEXT_HEIGHT = 0.5
@@ -155,6 +158,12 @@ class PanelSpec:
     bottom_type: str = "L"; bottom_f1: float = 0.0; bottom_f2: float = 0.0
     left_type: str = "L";   left_f1: float = 0.0;   left_f2: float = 0.0
     right_type: str = "L";  right_f1: float = 0.0;  right_f2: float = 0.0
+    # Right trapezoid (RT4S / RT4J): parallel top or bottom with 90° leg corners;
+    # opposing edge is angled. Leg lengths are vertical spans from the straight
+    # parallel HC line to the angled HC corners at left / right.
+    rt_opposing_edge: Optional[str] = None  # "top" | "bottom"
+    rt_leg_left: Optional[float] = None
+    rt_leg_right: Optional[float] = None
 
 
 def _to_float(v, default=0.0):
@@ -164,6 +173,15 @@ def _to_float(v, default=0.0):
         return float(v)
     except (ValueError, TypeError):
         return default
+
+
+def _to_optional_float(v):
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
 
 
 def _first_present(row, *keys):
@@ -259,10 +277,26 @@ def parse_csv(path):
         elif raw_code == "J": raw_code = "J4S"
         if raw_code not in FLANGE_CODES:
             raise ValueError(f"Row {i}: flange_code must be one of {FLANGE_CODES}")
+        rt_edge = (row.get("rt_opposing_edge") or "").strip().lower()
+        rt_ll = _to_optional_float(row.get("rt_leg_left"))
+        rt_lr = _to_optional_float(row.get("rt_leg_right"))
+        if raw_code in ("RT4S", "RT4J"):
+            if rt_edge not in ("top", "bottom"):
+                raise ValueError(
+                    f"Row {i}: rt_opposing_edge is required for {raw_code} (top or bottom)."
+                )
+            if rt_ll is None or rt_lr is None or rt_ll <= 0 or rt_lr <= 0:
+                raise ValueError(
+                    f"Row {i}: rt_leg_left and rt_leg_right must be positive for {raw_code}."
+                )
+        elif rt_edge or rt_ll is not None or rt_lr is not None:
+            raise ValueError(
+                f"Row {i}: rt_* fields are only valid for RT4S/RT4J (got flange_code={raw_code})."
+            )
         pattern = (row.get("pattern") or "").strip().lower()
         if pattern not in {"straight", "staggered"}:
             raise ValueError(f"Row {i}: pattern must be straight or staggered")
-        ftype = "J" if raw_code.startswith("J") else "L"
+        ftype = "J" if (raw_code.startswith("J") or raw_code == "RT4J") else "L"
         fastening_pair = (row.get("fastening_pair") or "").strip().lower()
         if not fastening_pair:
             raise ValueError(
@@ -298,10 +332,15 @@ def parse_csv(path):
             raise ValueError(
                 f"Row {i}: slot_length ({slot_length}) must be >= fastener_dia ({fastener_dia})"
             )
+        face_w = float(row["width"])
+        face_h = float(row["height"])
+        if raw_code in ("RT4S", "RT4J"):
+            face_h = max(face_h, float(rt_ll), float(rt_lr))
+
         out.append(PanelSpec(
             panel_id=panel_id,
-            face_width=float(row["width"]),
-            face_height=float(row["height"]),
+            face_width=face_w,
+            face_height=face_h,
             thickness=_thickness_to_float(row["thickness"], material_key, alloy_key),
             flange_code=raw_code, flange_type=ftype,
             flange1_depth=_to_float(row.get("flange1_depth"), 0.0),
@@ -331,6 +370,9 @@ def parse_csv(path):
             right_type=(row.get("right_type") or "L").strip().upper(),
             right_f1=_to_float(row.get("right_f1"), 0.0),
             right_f2=_to_float(row.get("right_f2"), 0.0),
+            rt_opposing_edge=rt_edge or None,
+            rt_leg_left=rt_ll,
+            rt_leg_right=rt_lr,
         ))
     return out
 
@@ -394,6 +436,210 @@ def _flat_leg_L(nominal, r, k, t):
     return max(nominal - (r + t) + 2.0 * _ba_half(r, k, t), 0.0)
 
 
+def _is_right_trapezoid(spec: PanelSpec) -> bool:
+    return spec.flange_code in ("RT4S", "RT4J")
+
+
+# ---------------------------------------------------------------------------
+# Right trapezoid (RT4S / RT4J) — vector helpers and offset outline
+# ---------------------------------------------------------------------------
+def _v2_add(a, b):
+    return (a[0] + b[0], a[1] + b[1])
+
+
+def _v2_sub(a, b):
+    return (a[0] - b[0], a[1] - b[1])
+
+
+def _v2_scale(a, s):
+    return (a[0] * s, a[1] * s)
+
+
+def _v2_dot(a, b):
+    return a[0] * b[0] + a[1] * b[1]
+
+
+def _v2_len(a):
+    return math.hypot(a[0], a[1])
+
+
+def _v2_norm(a):
+    L = _v2_len(a)
+    if L < 1e-12:
+        return (1.0, 0.0)
+    return (a[0] / L, a[1] / L)
+
+
+def _v2_neg(a):
+    return (-a[0], -a[1])
+
+
+def _perp_outward_ccw(p0, p1):
+    """Unit outward normal for a CCW polygon edge from p0 → p1."""
+    d = _v2_norm(_v2_sub(p1, p0))
+    return (d[1], -d[0])
+
+
+def _line_intersect_inf(p, d, q, e):
+    """Infinite-line intersection: p + t d = q + u e."""
+    den = d[0] * e[1] - d[1] * e[0]
+    if abs(den) < 1e-12:
+        return None
+    qmp = _v2_sub(q, p)
+    t = (qmp[0] * e[1] - qmp[1] * e[0]) / den
+    return _v2_add(p, _v2_scale(d, t))
+
+
+def _offset_polygon_miter(pts_ccw, dists):
+    """Parallel offset of convex polygon (CCW). dists[i] offsets edge i (pts[i]→pts[i+1])."""
+    n = len(pts_ccw)
+    lines = []
+    for i in range(n):
+        p0 = pts_ccw[i]
+        p1 = pts_ccw[(i + 1) % n]
+        out_n = _perp_outward_ccw(p0, p1)
+        off = dists[i]
+        d = _v2_norm(_v2_sub(p1, p0))
+        q = _v2_add(p0, _v2_scale(out_n, off))
+        lines.append((q, d))
+    out_pts = []
+    for i in range(n):
+        p0, d0 = lines[i]
+        p1, d1 = lines[(i + 1) % n]
+        inter = _line_intersect_inf(p0, d0, p1, d1)
+        if inter is None:
+            inter = pts_ccw[(i + 1) % n]
+        out_pts.append(inter)
+    return out_pts
+
+
+def _poly_bbox(pts):
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _translate_poly(pts, dx, dy):
+    return [(p[0] + dx, p[1] + dy) for p in pts]
+
+
+def _rt_legs(spec: PanelSpec) -> tuple[float, float]:
+    return float(spec.rt_leg_left or 0.0), float(spec.rt_leg_right or 0.0)
+
+
+def _rt_hc_corners_raw(spec: PanelSpec, fx0: float, fx1: float, eb_bd: float) -> tuple:
+    """BL, BR, TR, TL in CCW order before blank translation (y measured up from blank bottom)."""
+    hL, hR = _rt_legs(spec)
+    if spec.rt_opposing_edge == "top":
+        yb = eb_bd
+        return (
+            (fx0, yb),
+            (fx1, yb),
+            (fx1, yb + hR),
+            (fx0, yb + hL),
+        )
+    ytop = eb_bd + max(hL, hR)
+    return (
+        (fx0, ytop - hL),
+        (fx1, ytop - hR),
+        (fx1, ytop),
+        (fx0, ytop),
+    )
+
+
+def _rt_face_centroid(bl, br, tr, tl):
+    return (
+        (bl[0] + br[0] + tr[0] + tl[0]) / 4.0,
+        (bl[1] + br[1] + tr[1] + tl[1]) / 4.0,
+    )
+
+
+def _inward_normal_edge(p0, p1, centroid):
+    """Unit normal from edge p0→p1 pointing into the polygon (toward centroid)."""
+    mid = _v2_scale(_v2_add(p0, p1), 0.5)
+    tin = _v2_sub(centroid, mid)
+    return _v2_norm(tin)
+
+
+def _rt_blank_layout(spec: PanelSpec, sides, bd: float):
+    """HC corners, outer offset polygon, translation to origin, bw, bh."""
+    el = _side_extra(sides["left"])
+    er = _side_extra(sides["right"])
+    eb = _side_extra(sides["bottom"])
+    et = _side_extra(sides["top"])
+    W = spec.face_width
+    bw = W + el + er + 2.0 * bd
+    fx0 = el + bd
+    fx1 = bw - er - bd
+    eb_bd = eb + bd
+    bl, br, tr, tl = _rt_hc_corners_raw(spec, fx0, fx1, eb_bd)
+    dists = [eb + bd, er + bd, et + bd, el + bd]
+    outer = _offset_polygon_miter([bl, br, tr, tl], dists)
+    minx, miny, maxx, maxy = _poly_bbox(outer)
+    dx, dy = -minx, -miny
+    bl = _v2_add(bl, (dx, dy))
+    br = _v2_add(br, (dx, dy))
+    tr = _v2_add(tr, (dx, dy))
+    tl = _v2_add(tl, (dx, dy))
+    outer = _translate_poly(outer, dx, dy)
+    minx, miny, maxx, maxy = _poly_bbox(outer)
+    bh = maxy - miny
+    return {
+        "bw": bw,
+        "bh": bh,
+        "fx0": bl[0],
+        "fy0": bl[1],
+        "fx1": br[0],
+        "bl": bl,
+        "br": br,
+        "tr": tr,
+        "tl": tl,
+        "outer": outer,
+    }
+
+
+def _rt_flat_size(spec, sides, rules):
+    r, k, t = rules["r"], rules["k"], spec.thickness
+    bd = _bd(r, k, t)
+    lay = _rt_blank_layout(spec, sides, bd)
+    return lay["bw"], lay["bh"]
+
+
+def _point_in_convex_quad(px, py, bl, br, tr, tl):
+    poly = (bl, br, tr, tl)
+    sgn = None
+    for i in range(4):
+        a = poly[i]
+        b = poly[(i + 1) % 4]
+        ex = b[0] - a[0]
+        ey = b[1] - a[1]
+        vx = px - a[0]
+        vy = py - a[1]
+        c = ex * vy - ey * vx
+        if abs(c) < 1e-9:
+            continue
+        if sgn is None:
+            sgn = c > 0
+        elif (c > 0) != sgn:
+            return False
+    return True
+
+
+def _hole_centers_rt(fx0, fx1, bl, br, tr, tl,
+                     hole_dia, pitch, pattern, stagger_angle, margin):
+    """Hole grid in the axis-aligned face bbox, filtered to the trapezoid."""
+    min_y = min(bl[1], br[1], tr[1], tl[1])
+    max_y = max(bl[1], br[1], tr[1], tl[1])
+    raw = _hole_centers(
+        fx0, min_y, fx1 - fx0, max_y - min_y,
+        hole_dia, pitch, pattern, stagger_angle, margin,
+    )
+    out = [(x, y) for x, y in raw if _point_in_convex_quad(x, y, bl, br, tr, tl)]
+    if not out and raw:
+        out = [raw[0]]
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Resolve sides
 # ---------------------------------------------------------------------------
@@ -410,8 +656,18 @@ def resolve_sides(spec):
 
     c=spec.flange_code; f1=spec.flange1_depth; f2=spec.flange2_depth or 0.0
 
-    if c=="L4S": sd=L(f1);    return {s:sd for s in ("top","bottom","left","right")}
-    if c=="J4S": sd=J(f1,f2); return {s:sd for s in ("top","bottom","left","right")}
+    if c == "L4S":
+        sd = L(f1)
+        return {s: sd for s in ("top", "bottom", "left", "right")}
+    if c == "J4S":
+        sd = J(f1, f2)
+        return {s: sd for s in ("top", "bottom", "left", "right")}
+    if c == "RT4S":
+        sd = L(f1)
+        return {s: sd for s in ("top", "bottom", "left", "right")}
+    if c == "RT4J":
+        sd = J(f1, f2)
+        return {s: sd for s in ("top", "bottom", "left", "right")}
     if c=="L2TB": return {"top":L(f1),"bottom":L(f1),"left":OFF(),"right":OFF()}
     if c=="J2TB": return {"top":J(f1,f2),"bottom":J(f1,f2),"left":OFF(),"right":OFF()}
     if c=="L2LR": return {"top":OFF(),"bottom":OFF(),"left":L(f1),"right":L(f1)}
@@ -434,11 +690,13 @@ def _side_extra(sd):
 
 
 def flat_size(spec):
-    """Blank = face + 2*(f1+f2) per axis. Verified: 24+7.174=31.174 ✓"""
+    """Blank = face + 2*(f1+f2) per axis. RT uses miter offset of HC trapezoid."""
     sides = resolve_sides(spec)
+    if _is_right_trapezoid(spec):
+        return _rt_flat_size(spec, sides, get_rules(spec))
     return (
-        spec.face_width  + _side_extra(sides["left"])  + _side_extra(sides["right"]),
-        spec.face_height + _side_extra(sides["top"])   + _side_extra(sides["bottom"]),
+        spec.face_width + _side_extra(sides["left"]) + _side_extra(sides["right"]),
+        spec.face_height + _side_extra(sides["top"]) + _side_extra(sides["bottom"]),
     )
 
 
@@ -649,6 +907,313 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
     _app(tr_arr);  [_app(p) for p in tr]
     _app(tl_arr);  [_app(p) for p in tl]
 
+    return pts
+
+
+def _skew_relief_notch_path(C, hc, t1, t2, half):
+    """Parallelogram relief (edges parallel to bend tangents t1, t2), quadrant toward hc."""
+    t1n = _v2_norm(t1)
+    t2n = _v2_norm(t2)
+    v = _v2_sub(hc, C)
+    s1 = 1 if _v2_dot(v, t1n) >= 0 else -1
+    s2 = 1 if _v2_dot(v, t2n) >= 0 else -1
+    p_e1 = _v2_add(C, _v2_scale(t1n, s1 * half))
+    p_e2 = _v2_add(C, _v2_scale(t2n, s2 * half))
+    p_far = _v2_add(_v2_add(C, _v2_scale(t1n, s1 * half)), _v2_scale(t2n, s2 * half))
+    if abs(t1n[0]) >= abs(t2n[0]):
+        entry = (hc[0], p_e2[1])
+    else:
+        entry = (p_e1[0], hc[1])
+    notch_path = [entry]
+    for q in (p_e1, p_far, p_e2):
+        if abs(q[0] - notch_path[-1][0]) > 1e-9 or abs(q[1] - notch_path[-1][1]) > 1e-9:
+            notch_path.append(q)
+    if abs(notch_path[-1][0] - hc[0]) > 1e-9 or abs(notch_path[-1][1] - hc[1]) > 1e-9:
+        notch_path.append(hc)
+    return notch_path
+
+
+def _jj_notch_path_axis(hc, h_void, v_void, ox, oy, half):
+    """Original J+J five-point relief in axis frame (ox, oy = ±1 like _corner)."""
+    x0, x1 = h_void[0] - ox * half, h_void[0] + ox * half
+    y0, y1 = v_void[1] - oy * half, v_void[1] + oy * half
+    flange_x = x0 if ox < 0 else x1
+    face_x = x1 if ox < 0 else x0
+    flange_y = y0 if oy < 0 else y1
+    face_y = y1 if oy < 0 else y0
+    return [
+        (flange_x, hc[1]),
+        (flange_x, face_y),
+        (face_x, face_y),
+        (face_x, flange_y),
+        (hc[0], flange_y),
+    ]
+
+
+def _rt_corner_core(
+    hsd, vsd, hc, arrive_vert,
+    h_void, h_blank, v_void, v_blank,
+    b1h_p, b1h_t, b1v_p, b1v_t,
+    notch_size, gap,
+    u_h, u_v,
+    fh2_param, fv2_param,
+    jj_ox, jj_oy,
+):
+    """Void / miter / relief dispatch (jj_ox/jj_oy for J+J axis template when bends are orthogonal)."""
+    C = _line_intersect_inf(b1h_p, b1h_t, b1v_p, b1v_t)
+    if C is None:
+        C = hc
+
+    fh2 = fh2_param if (hsd.active and hsd.ftype == "J" and vsd.active and vsd.ftype == "J") else 0.0
+    fv2 = fv2_param if (hsd.active and hsd.ftype == "J" and vsd.active and vsd.ftype == "J") else 0.0
+    h_J = hsd.active and fh2 > 1e-9
+    h_L = hsd.active and not h_J
+    v_J = vsd.active and fv2 > 1e-9
+    v_L = vsd.active and not v_J
+
+    if gap > 0 and fh2 > 1e-9 and fv2 > 1e-9:
+        halfg = gap / 2.0
+        dh = _v2_sub(h_void, hc)
+        dv = _v2_sub(v_void, hc)
+        if _v2_len(dh) > 1e-9:
+            h_void = _v2_add(h_void, _v2_scale(_v2_norm(dh), halfg))
+        if _v2_len(dv) > 1e-9:
+            v_void = _v2_add(v_void, _v2_scale(_v2_norm(dv), halfg))
+
+    notch_path = None
+    if hsd.active and vsd.active:
+        half = notch_size / 2.0
+        if hsd.ftype == "J" and vsd.ftype == "J":
+            if jj_ox is not None and jj_oy is not None:
+                notch_path = _jj_notch_path_axis(hc, h_void, v_void, jj_ox, jj_oy, half)
+            else:
+                notch_path = _skew_relief_notch_path(C, hc, b1h_t, b1v_t, half)
+        else:
+            notch_path = _skew_relief_notch_path(C, hc, b1h_t, b1v_t, half)
+
+    if arrive_vert:
+        if not hsd.active and not vsd.active:
+            return []
+        if hsd.active and not vsd.active:
+            return [hc, h_void, h_blank] if h_J else [hc, h_blank]
+        if not hsd.active and vsd.active:
+            return [v_void, hc] if v_J else [hc]
+        if notch_path:
+            prefix = [v_void] if v_J else []
+            suffix = [h_void, h_blank] if h_J else [h_blank]
+            return [*prefix, *notch_path, *suffix]
+        if v_J and h_J:
+            return [v_void, hc, h_void, h_blank]
+        if v_J and h_L:
+            return [v_void, hc, h_blank]
+        if v_L and h_J:
+            return [hc, h_void, h_blank]
+        return [hc, h_blank]
+    else:
+        if not hsd.active and not vsd.active:
+            return []
+        if hsd.active and not vsd.active:
+            return [h_void, hc] if h_J else [hc]
+        if not hsd.active and vsd.active:
+            return [hc, v_void, v_blank] if v_J else [hc, v_void]
+        if notch_path:
+            prefix = [h_void] if h_J else []
+            suffix = [v_void, v_blank] if v_J else [v_void]
+            return [*prefix, *list(reversed(notch_path)), *suffix]
+        if h_J and v_J:
+            return [h_void, hc, v_void, v_blank]
+        if h_J and v_L:
+            return [h_void, hc, v_void]
+        if h_L and v_J:
+            return [hc, v_void, v_blank]
+        return [hc, v_void]
+
+
+def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, lay):
+    """CCW blank outline for right trapezoid (HC quad BL,BR,TR,TL already translated)."""
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    sl, sr, sb, st = sides["left"], sides["right"], sides["bottom"], sides["top"]
+    centroid = _rt_face_centroid(bl, br, tr, tl)
+
+    def _corner_params(this_sd, other_sd):
+        if not this_sd.active:
+            return (0.0, 0.0)
+        is_jj = this_sd.ftype == "J" and other_sd.active and other_sd.ftype == "J"
+        if is_jj:
+            return (this_sd.f1 + bd, this_sd.f2)
+        return (this_sd.f1 + this_sd.f2 + bd, 0.0)
+
+    fh1_bl, fh2_bl = _corner_params(sb, sl)
+    fv1_bl, fv2_bl = _corner_params(sl, sb)
+    fh1_br, fh2_br = _corner_params(sb, sr)
+    fv1_br, fv2_br = _corner_params(sr, sb)
+    fh1_tr, fh2_tr = _corner_params(st, sr)
+    fv1_tr, fv2_tr = _corner_params(sr, st)
+    fh1_tl, fh2_tl = _corner_params(st, sl)
+    fv1_tl, fv2_tl = _corner_params(sl, st)
+
+    fx0, fy0 = bl[0], bl[1]
+    fx1 = br[0]
+
+    n_top_in = _inward_normal_edge(tl, tr, centroid)
+    n_top_out = _v2_neg(n_top_in)
+    t_top = _v2_norm(_v2_sub(tr, tl))
+    n_bot_in = _inward_normal_edge(bl, br, centroid)
+    n_bot_out = _v2_neg(n_bot_in)
+    t_bot = _v2_norm(_v2_sub(br, bl))
+
+    bend_left_x = fx0 - ba2
+    bend_right_x = fx1 + ba2
+
+    if spec.rt_opposing_edge == "top":
+        bend_bottom_y = fy0 - ba2
+        b1_top_p = _v2_add(tl, _v2_scale(n_top_in, ba2))
+        b1_top_t = t_top
+
+        def _corner_bl():
+            hc = bl
+            u_h, u_v = n_bot_out, (-1.0, 0.0)
+            h_void = _v2_add(hc, _v2_scale(u_h, fh1_bl))
+            h_blank = _v2_add(hc, _v2_add(_v2_scale(u_h, fh1_bl + fh2_bl), _v2_scale((-1.0, 0.0), fh2_bl)))
+            v_void = _v2_add(hc, _v2_scale(u_v, fv1_bl))
+            v_blank = _v2_add(hc, _v2_add(_v2_scale(u_v, fv1_bl + fv2_bl), _v2_scale((0.0, 1.0), fv2_bl)))
+            return _rt_corner_core(
+                sb, sl, hc, True, h_void, h_blank, v_void, v_blank,
+                (fx0, bend_bottom_y), (1.0, 0.0), (bend_left_x, fy0), (0.0, 1.0),
+                notch_size, gap, u_h, u_v, fh2_bl, fv2_bl, -1, -1,
+            )
+
+        def _corner_br():
+            hc = br
+            u_h, u_v = n_bot_out, (1.0, 0.0)
+            h_void = _v2_add(hc, _v2_scale(u_h, fh1_br))
+            h_blank = _v2_add(hc, _v2_add(_v2_scale(u_h, fh1_br + fh2_br), _v2_scale((1.0, 0.0), fh2_br)))
+            v_void = _v2_add(hc, _v2_scale(u_v, fv1_br))
+            v_blank = _v2_add(hc, _v2_add(_v2_scale(u_v, fv1_br + fv2_br), _v2_scale((0.0, 1.0), fv2_br)))
+            return _rt_corner_core(
+                sb, sr, hc, False, h_void, h_blank, v_void, v_blank,
+                (fx0, bend_bottom_y), (1.0, 0.0), (bend_right_x, fy0), (0.0, 1.0),
+                notch_size, gap, u_h, u_v, fh2_br, fv2_br, 1, -1,
+            )
+
+        def _corner_tr():
+            hc = tr
+            u_h, u_v = n_top_out, (1.0, 0.0)
+            h_void = _v2_add(hc, _v2_scale(u_h, fh1_tr))
+            h_blank = _v2_add(hc, _v2_add(_v2_scale(u_h, fh1_tr + fh2_tr), _v2_scale(t_top, -fh2_tr)))
+            v_void = _v2_add(hc, _v2_scale(u_v, fv1_tr))
+            v_blank = _v2_add(hc, _v2_add(_v2_scale(u_v, fv1_tr + fv2_tr), _v2_scale((0.0, -1.0), fv2_tr)))
+            return _rt_corner_core(
+                st, sr, hc, True, h_void, h_blank, v_void, v_blank,
+                b1_top_p, b1_top_t, (bend_right_x, br[1]), (0.0, 1.0),
+                notch_size, gap, u_h, u_v, fh2_tr, fv2_tr, None, None,
+            )
+
+        def _corner_tl():
+            hc = tl
+            u_h, u_v = n_top_out, (-1.0, 0.0)
+            h_void = _v2_add(hc, _v2_scale(u_h, fh1_tl))
+            h_blank = _v2_add(hc, _v2_add(_v2_scale(u_h, fh1_tl + fh2_tl), _v2_scale(t_top, fh2_tl)))
+            v_void = _v2_add(hc, _v2_scale(u_v, fv1_tl))
+            v_blank = _v2_add(hc, _v2_add(_v2_scale(u_v, fv1_tl + fv2_tl), _v2_scale((0.0, -1.0), fv2_tl)))
+            return _rt_corner_core(
+                st, sl, hc, False, h_void, h_blank, v_void, v_blank,
+                b1_top_p, b1_top_t, (bend_left_x, bl[1]), (0.0, 1.0),
+                notch_size, gap, u_h, u_v, fh2_tl, fv2_tl, None, None,
+            )
+
+        bl_arr = (bl[0] + (-1) * (fv1_bl + fv2_bl), bl[1] + fv2_bl) if sl.active else bl
+        br_arr = (br[0] - fh2_br, br[1] - fh1_br - fh2_br) if sb.active else br
+        tr_arr = (tr[0] + fv1_tr + fv2_tr, tr[1] - fv2_tr) if sr.active else tr
+        tl_arr = _v2_add(tl, _v2_add(_v2_scale(n_top_out, fh1_tl + fh2_tl), _v2_scale(t_top, fh2_tl))) if st.active else tl
+
+    else:
+        b1_bot_p = _v2_add(bl, _v2_scale(n_bot_in, ba2))
+        b1_bot_t = t_bot
+        bend_top_y = tr[1] + ba2
+
+        def _corner_bl():
+            hc = bl
+            u_h, u_v = n_bot_out, (-1.0, 0.0)
+            h_void = _v2_add(hc, _v2_scale(u_h, fh1_bl))
+            h_blank = _v2_add(hc, _v2_add(_v2_scale(u_h, fh1_bl + fh2_bl), _v2_scale(t_bot, fh2_bl)))
+            v_void = _v2_add(hc, _v2_scale(u_v, fv1_bl))
+            v_blank = _v2_add(hc, _v2_add(_v2_scale(u_v, fv1_bl + fv2_bl), _v2_scale((0.0, 1.0), fv2_bl)))
+            return _rt_corner_core(
+                sb, sl, hc, True, h_void, h_blank, v_void, v_blank,
+                b1_bot_p, b1_bot_t, (bend_left_x, bl[1]), (0.0, 1.0),
+                notch_size, gap, u_h, u_v, fh2_bl, fv2_bl, None, None,
+            )
+
+        def _corner_br():
+            hc = br
+            u_h, u_v = n_bot_out, (1.0, 0.0)
+            h_void = _v2_add(hc, _v2_scale(u_h, fh1_br))
+            h_blank = _v2_add(hc, _v2_add(_v2_scale(u_h, fh1_br + fh2_br), _v2_scale(t_bot, -fh2_br)))
+            v_void = _v2_add(hc, _v2_scale(u_v, fv1_br))
+            v_blank = _v2_add(hc, _v2_add(_v2_scale(u_v, fv1_br + fv2_br), _v2_scale((0.0, 1.0), fv2_br)))
+            return _rt_corner_core(
+                sb, sr, hc, False, h_void, h_blank, v_void, v_blank,
+                b1_bot_p, b1_bot_t, (bend_right_x, br[1]), (0.0, 1.0),
+                notch_size, gap, u_h, u_v, fh2_br, fv2_br, None, None,
+            )
+
+        def _corner_tr():
+            hc = tr
+            u_h, u_v = n_top_out, (1.0, 0.0)
+            h_void = _v2_add(hc, _v2_scale(u_h, fh1_tr))
+            h_blank = _v2_add(hc, _v2_add(_v2_scale(u_h, fh1_tr + fh2_tr), _v2_scale((1.0, 0.0), fh2_tr)))
+            v_void = _v2_add(hc, _v2_scale(u_v, fv1_tr))
+            v_blank = _v2_add(hc, _v2_add(_v2_scale(u_v, fv1_tr + fv2_tr), _v2_scale((0.0, -1.0), fv2_tr)))
+            return _rt_corner_core(
+                st, sr, hc, True, h_void, h_blank, v_void, v_blank,
+                (fx0, bend_top_y), (1.0, 0.0), (bend_right_x, br[1]), (0.0, 1.0),
+                notch_size, gap, u_h, u_v, fh2_tr, fv2_tr, 1, 1,
+            )
+
+        def _corner_tl():
+            hc = tl
+            u_h, u_v = n_top_out, (-1.0, 0.0)
+            h_void = _v2_add(hc, _v2_scale(u_h, fh1_tl))
+            h_blank = _v2_add(hc, _v2_add(_v2_scale(u_h, fh1_tl + fh2_tl), _v2_scale((-1.0, 0.0), fh2_tl)))
+            v_void = _v2_add(hc, _v2_scale(u_v, fv1_tl))
+            v_blank = _v2_add(hc, _v2_add(_v2_scale(u_v, fv1_tl + fv2_tl), _v2_scale((0.0, -1.0), fv2_tl)))
+            return _rt_corner_core(
+                st, sl, hc, False, h_void, h_blank, v_void, v_blank,
+                (fx0, bend_top_y), (1.0, 0.0), (bend_left_x, bl[1]), (0.0, 1.0),
+                notch_size, gap, u_h, u_v, fh2_tl, fv2_tl, -1, 1,
+            )
+
+        bl_arr = (bl[0] + (-1) * (fv1_bl + fv2_bl), bl[1] + fv2_bl) if sl.active else bl
+        br_arr = (br[0] + fv1_br + fv2_br, br[1] + fv2_br) if sr.active else br
+        tr_arr = (tr[0] + fh2_tr, tr[1] + (fh1_tr + fh2_tr)) if st.active else tr
+        tl_arr = (tl[0] - fh2_tl, tl[1] + (fh1_tl + fh2_tl)) if st.active else tl
+
+    bl_seq = _corner_bl()
+    br_seq = _corner_br()
+    tr_seq = _corner_tr()
+    tl_seq = _corner_tl()
+
+    pts = []
+
+    def _app(pt):
+        if pt is None:
+            return
+        if not pts or abs(pt[0] - pts[-1][0]) > 1e-9 or abs(pt[1] - pts[-1][1]) > 1e-9:
+            pts.append(pt)
+
+    _app(bl_arr)
+    for p in bl_seq:
+        _app(p)
+    _app(br_arr)
+    for p in br_seq:
+        _app(p)
+    _app(tr_arr)
+    for p in tr_seq:
+        _app(p)
+    _app(tl_arr)
+    for p in tl_seq:
+        _app(p)
     return pts
 
 
@@ -1017,6 +1582,181 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
                 _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
 
 
+def _add_slot_axis(msp, cx, cy, width, length, tx, ty, layer):
+    """Rounded slot with long axis parallel to unit vector (tx, ty)."""
+    if width <= 0 or length < width:
+        return
+    r = width / 2.0
+    a = (length - width) / 2.0
+
+    def R(px, py):
+        return (cx + px * tx - py * ty, cy + px * ty + py * tx)
+
+    pts = [
+        (*R(-a, r), 0.0),
+        (*R(a, r), -1.0),
+        (*R(a, -r), 0.0),
+        (*R(-a, -r), -1.0),
+    ]
+    msp.add_lwpolyline(pts, format="xyb", close=True, dxfattribs={"layer": layer})
+
+
+def _bend1_rt_dict(spec, lay, sides, ba2):
+    """Scalar bend1 references for slots / panel ID (mid-span on slanted edges)."""
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    centroid = _rt_face_centroid(bl, br, tr, tl)
+    fx0, fy0 = bl[0], bl[1]
+    fx1 = br[0]
+    mx = (fx0 + fx1) * 0.5
+    pos = {}
+    n_top_in = _inward_normal_edge(tl, tr, centroid)
+    t_top = _v2_norm(_v2_sub(tr, tl))
+    b1_top_p = _v2_add(tl, _v2_scale(n_top_in, ba2))
+    n_bot_in = _inward_normal_edge(bl, br, centroid)
+    t_bot = _v2_norm(_v2_sub(br, bl))
+    b1_bot_p = _v2_add(bl, _v2_scale(n_bot_in, ba2))
+
+    def y_on_ray(p0, t, xq):
+        if abs(t[0]) < 1e-12:
+            return p0[1]
+        s = (xq - p0[0]) / t[0]
+        return p0[1] + s * t[1]
+
+    if sides["bottom"].active:
+        if spec.rt_opposing_edge == "top":
+            pos["bottom"] = fy0 - ba2
+        else:
+            pos["bottom"] = y_on_ray(b1_bot_p, t_bot, mx)
+    if sides["top"].active:
+        if spec.rt_opposing_edge == "top":
+            pos["top"] = y_on_ray(b1_top_p, t_top, mx)
+        else:
+            pos["top"] = tr[1] + ba2
+    if sides["left"].active:
+        pos["left"] = fx0 - ba2
+    if sides["right"].active:
+        pos["right"] = fx1 + ba2
+    return pos
+
+
+def _draw_bend_lines_rt(msp, spec, lay, sides, ba2, blank_w, blank_h):
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    fx0, fy0 = bl[0], bl[1]
+    fx1 = br[0]
+    centroid = _rt_face_centroid(bl, br, tr, tl)
+    sd = sides
+    if spec.rt_opposing_edge == "top":
+        if sd["bottom"].active:
+            _add_line(msp, fx0, fy0 - ba2, fx1, fy0 - ba2, "bend")
+        if sd["top"].active:
+            n_top_in = _inward_normal_edge(tl, tr, centroid)
+            p0 = _v2_add(tl, _v2_scale(n_top_in, ba2))
+            p1 = _v2_add(tr, _v2_scale(n_top_in, ba2))
+            _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
+        if sd["left"].active:
+            _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
+        if sd["right"].active:
+            _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
+        if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
+            _add_line(msp, fx0, sd["bottom"].f2, fx1, sd["bottom"].f2, "bend")
+        if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
+            o = lay["outer"]
+            tl_o, tr_o = o[3], o[2]
+            n = _v2_norm(_perp_outward_ccw(tl_o, tr_o))
+            if _v2_dot(n, _v2_sub(centroid, _v2_scale(_v2_add(tl_o, tr_o), 0.5))) > 0:
+                n = _v2_neg(n)
+            q0 = _v2_add(tl_o, _v2_scale(n, -sd["top"].f2))
+            q1 = _v2_add(tr_o, _v2_scale(n, -sd["top"].f2))
+            _add_line(msp, q0[0], q0[1], q1[0], q1[1], "bend")
+    else:
+        n_bot_in = _inward_normal_edge(bl, br, centroid)
+        p0 = _v2_add(bl, _v2_scale(n_bot_in, ba2))
+        p1 = _v2_add(br, _v2_scale(n_bot_in, ba2))
+        if sd["bottom"].active:
+            _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
+        if sd["top"].active:
+            _add_line(msp, fx0, tr[1] + ba2, fx1, tr[1] + ba2, "bend")
+        if sd["left"].active:
+            _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
+        if sd["right"].active:
+            _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
+        if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
+            o = lay["outer"]
+            bl_o, br_o = o[0], o[1]
+            n = _v2_norm(_perp_outward_ccw(bl_o, br_o))
+            if _v2_dot(n, _v2_sub(centroid, _v2_scale(_v2_add(bl_o, br_o), 0.5))) > 0:
+                n = _v2_neg(n)
+            q0 = _v2_add(bl_o, _v2_scale(n, -sd["bottom"].f2))
+            q1 = _v2_add(br_o, _v2_scale(n, -sd["bottom"].f2))
+            _add_line(msp, q0[0], q0[1], q1[0], q1[1], "bend")
+        if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
+            _add_line(msp, fx0, blank_h - sd["top"].f2, fx1, blank_h - sd["top"].f2, "bend")
+    if sd["left"].active and sd["left"].ftype == "J" and sd["left"].f2 > 0:
+        _add_line(msp, sd["left"].f2, min(bl[1], tl[1]), sd["left"].f2, max(bl[1], tl[1]), "bend")
+    if sd["right"].active and sd["right"].ftype == "J" and sd["right"].f2 > 0:
+        _add_line(msp, blank_w - sd["right"].f2, min(br[1], tr[1]), blank_w - sd["right"].f2, max(br[1], tr[1]), "bend")
+
+
+def _y_on_edge_at_x(p0, p1, xq):
+    if abs(p1[0] - p0[0]) < 1e-12:
+        return (p0[1] + p1[1]) * 0.5
+    t = (xq - p0[0]) / (p1[0] - p0[0])
+    return p0[1] + t * (p1[1] - p0[1])
+
+
+def _draw_fastening_slots_rt(msp, spec, lay, bend1, sides, blank_w, blank_h, ba2, bd, face_holes):
+    active = _fastening_sides(spec, sides)
+    if not active:
+        return
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    fx0, fy0 = bl[0], bl[1]
+    fx1 = br[0]
+    face_w = fx1 - fx0
+    min_y = min(bl[1], br[1], tr[1], tl[1])
+    max_y = max(bl[1], br[1], tr[1], tl[1])
+    face_h = max_y - min_y
+    fdia = spec.fastener_dia
+    flen = spec.slot_length if spec.slot_length is not None else (fdia + INSTALL_SLOT_EXTRA)
+    centroid = _rt_face_centroid(bl, br, tr, tl)
+    n_top_in = _inward_normal_edge(tl, tr, centroid)
+    t_top = _v2_norm(_v2_sub(tr, tl))
+    b1_top_p = _v2_add(tl, _v2_scale(n_top_in, ba2))
+    o = lay["outer"]
+
+    for sn in active:
+        sd = sides[sn]
+        if sn in ("bottom", "top"):
+            if sd.ftype == "J":
+                xs = _aligned_positions([c[0] for c in face_holes])
+                for px in xs:
+                    col = _holes_on_same_col(face_holes, px)
+                    hy = _j_slot_normal_center(sn, bend1, col or face_holes, bd)
+                    _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
+                continue
+            if sn == "top" and spec.rt_opposing_edge == "top" and sd.ftype == "L":
+                tl_o, tr_o = o[3], o[2]
+                for px in [fx0 + p for p in _l_positions(face_w)]:
+                    yb = _y_on_edge_at_x(b1_top_p, _v2_add(b1_top_p, t_top), px)
+                    yo = _y_on_edge_at_x(tl_o, tr_o, px)
+                    cy = (yb + yo) * 0.5
+                    _add_slot_axis(msp, px, cy, fdia, flen, t_top[0], t_top[1], "fastening")
+                continue
+            hy = (bend1[sn] / 2.0) if sn == "bottom" else ((blank_h + bend1[sn]) / 2.0)
+            for px in [fx0 + p for p in _l_positions(face_w)]:
+                _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
+        else:
+            if sd.ftype == "J":
+                ys = _aligned_positions([c[1] for c in face_holes])
+                for py in ys:
+                    row = _holes_on_same_row(face_holes, py)
+                    hx = _j_slot_normal_center(sn, bend1, row or face_holes, bd)
+                    _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
+                continue
+            hx = (bend1[sn] / 2.0) if sn == "left" else ((blank_w + bend1[sn]) / 2.0)
+            for py in [min_y + p for p in _l_positions(face_h)]:
+                _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
+
+
 # ---------------------------------------------------------------------------
 # Section 6 corner reliefs
 #
@@ -1036,27 +1776,60 @@ def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t,
 # Main DXF generator
 # ---------------------------------------------------------------------------
 def generate_panel_dxf(spec, outdir):
-    rules  = get_rules(spec)
-    r,k,t  = rules["r"],rules["k"],spec.thickness
-    bd     = _bd(r,k,t)
-    ba2    = _ba_half(r,k,t)
-    sides  = resolve_sides(spec)
-    bw,bh  = flat_size(spec)
-    gap    = spec.gap_override if spec.gap_override is not None else MITER_GAP_DEFAULT
+    rules = get_rules(spec)
+    r, k, t = rules["r"], rules["k"], spec.thickness
+    bd = _bd(r, k, t)
+    ba2 = _ba_half(r, k, t)
+    sides = resolve_sides(spec)
+    gap = spec.gap_override if spec.gap_override is not None else MITER_GAP_DEFAULT
 
-    # Hard corner positions (void inner corners)
-    el=_side_extra(sides["left"]); er=_side_extra(sides["right"])
-    eb=_side_extra(sides["bottom"]); et=_side_extra(sides["top"])
-    fx0=el+bd; fy0=eb+bd
-    fx1=bw-er-bd; fy1=bh-et-bd
-    face_w=fx1-fx0; face_h=fy1-fy0
-
-    doc=ezdxf.new(dxfversion="R2010"); doc.units=1; msp=doc.modelspace()
-    for name,color in [("cut",1),("holes",2),("fastening",5),("bend",3),("text",6)]:
-        if name not in doc.layers: doc.layers.add(name=name,color=color)
+    doc = ezdxf.new(dxfversion="R2010")
+    doc.units = 1
+    msp = doc.modelspace()
+    for name, color in [("cut", 1), ("holes", 2), ("fastening", 5), ("bend", 3), ("text", 6)]:
+        if name not in doc.layers:
+            doc.layers.add(name=name, color=color)
 
     notch_size = 2.0 * t
-    pts=_blank_outline(bw,bh,sides,bd,ba2,notch_size,gap)
+
+    if _is_right_trapezoid(spec):
+        lay = _rt_blank_layout(spec, sides, bd)
+        bw, bh = lay["bw"], lay["bh"]
+        bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+        fx0, fy0 = bl[0], bl[1]
+        fx1 = br[0]
+        face_w = fx1 - fx0
+        face_h = max(tl[1], tr[1]) - min(bl[1], br[1])
+        pts = _blank_outline_rt(spec, bw, bh, sides, bd, ba2, notch_size, gap, lay)
+        msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
+        bend1 = _bend1_rt_dict(spec, lay, sides, ba2)
+        _draw_corner_reliefs(msp, fx0, fy0, fx1, fy0 + face_h, bw, bh, sides, r, t, ba2)
+        _draw_bend_lines_rt(msp, spec, lay, sides, ba2, bw, bh)
+        face_holes = _hole_centers_rt(
+            fx0, fx1, bl, br, tr, tl,
+            spec.hole_dia, spec.pitch, spec.pattern,
+            spec.stagger_angle, spec.margin,
+        )
+        for x, y in face_holes:
+            msp.add_circle((x, y), spec.hole_dia / 2.0, dxfattribs={"layer": "holes"})
+        _draw_fastening_slots_rt(msp, spec, lay, bend1, sides, bw, bh, ba2, bd, face_holes)
+        _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, bw, bh, bd)
+        os.makedirs(outdir, exist_ok=True)
+        doc.saveas(os.path.join(outdir, f"{spec.panel_id}.dxf"))
+        return
+
+    bw, bh = flat_size(spec)
+    el = _side_extra(sides["left"])
+    er = _side_extra(sides["right"])
+    eb = _side_extra(sides["bottom"])
+    et = _side_extra(sides["top"])
+    fx0 = el + bd
+    fy0 = eb + bd
+    fx1 = bw - er - bd
+    fy1 = bh - et - bd
+    face_w = fx1 - fx0
+    face_h = fy1 - fy0
+    pts = _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap)
     msp.add_lwpolyline(pts,close=True,dxfattribs={"layer":"cut"})
 
     bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, bw, bh, sides, ba2)
