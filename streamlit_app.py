@@ -243,7 +243,7 @@ with st.expander("Flange code reference", expanded=False):
   `fastener_dia + 0.50"`.
 - Accepted length aliases on import: `fastener_slot_length`, `install_slot_length`.
 - `shop_flat_mode`: `auto` (default) blends shop cut-line flats (5052 / 0.1875″ calibration) with bend theory across all table materials; `off` uses pure `_flat_leg_L` / `_flat_leg_J` / `_flat_lip` only.
-- DXF layer `finished_face` (gray): four **hard perimeter** corners (primary flange directions, ignoring bend relief), joined into a closed loop and offset **outward** by 0.195″ — not an offset of the detailed `cut` polyline; exclude from the cut path in CAM.
+- DXF layer `finished_face` (gray): closed rectangle (ortho) or trapezoid (RT) on the **true** finished-face construction lines — each active side lies **inset 0.195″ toward the face** from the developed flange run (`f1+f2`); holes and slots use this boundary for layout. **Bend CL lines are not drawn** on the DXF; exclude `finished_face` from the cut path in CAM.
 - For `MIX`: set `top_type` / `bottom_type` / `left_type` / `right_type` to `L` or `J`.
   Set `*_f1` (leg depth) and `*_f2` (return lip, J only). A side with `*_f1 = 0` is a straight cut.
 - For `RT4S` / `RT4J`: set `rt_opposing_edge` to `top` or `bottom` (which parallel edge is straight in plan).

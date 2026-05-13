@@ -60,16 +60,18 @@ BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
 # that face (cut = face − 0.195″ along the inset normal). Flat flange is
 # measured OUTWARD from the finished face.
 #
-# DXF `finished_face` layer: four **hard perimeter** corners (primary flange
-# directions at each corner, ignoring bend relief on the cut poly), closed
-# loop, offset outward by SHOP_FINISHED_FACE_INSET — not an offset of the
-# detailed cut outline.
+# DXF `finished_face` layer: closed loop on the **true** finished-face
+# construction lines — ortho: inset SHOP_FINISHED_FACE_INSET **toward the face**
+# from each outer blank edge along developed flange run (f1+f2); RT: same
+# inset applied inward from the HC trapezoid toward the face. Perimeter cut
+# stays on the detailed blank outline; bend CL lines are not drawn as DXF
+# reference (bend math still used only inside `_blank_outline` corner relief).
 #
 # Calibration coupon: 5052, 0.1875″, tight punch / shop practice; reference
 # bend model for the *anchor* theory term uses r=0.0625″, k=0.32 (K32) at
 # ref_t so that other alloys/gauges inherit deltas from MATERIAL_TABLE r,k,t.
 #
-# L: F1_od = 2.000″ → flat from cut to outside L flange = 1.859″.
+# L: F1_od = 2.000″ → flat from *perimeter cut* to outside L flange = 1.859″.
 # J: F1_od = 2.000″, F2_od = 1.750″ → cut to first bend flat run = 1.691″,
 #    cut to outside J = 3.274″ (return flat = 1.583″ at these nominals).
 #
@@ -646,27 +648,82 @@ def _polygon_signed_area(pts):
     return s * 0.5
 
 
-def _orthogonal_blank_hard_corners(bw: float, bh: float):
-    """Hard perimeter corners for an ortho flat: primary flange lines meet here; bend relief
-    is ignored (cut outline may jog inward). CCW from blank origin."""
-    return [(0.0, 0.0), (bw, 0.0), (bw, bh), (0.0, bh)]
+def _ff_span_from_blank_edge(sd) -> float:
+    """Developed flange run (f1+f2) minus finished-face inset toward the face.
+
+    Inactive side: outer blank cut is the face boundary on that edge (span 0)."""
+    if not sd.active:
+        return 0.0
+    return max(sd.f1 + sd.f2 - SHOP_FINISHED_FACE_INSET, 0.0)
 
 
-def _finished_face_outline_from_hard_perimeter(hard_ccw_quad, inset=SHOP_FINISHED_FACE_INSET):
-    """Shop finished-face artwork: closed polyline parallel-offset **outward** from the
-    four hard perimeter corners (intersection of primary flange directions, ignoring relief).
-    Physical perimeter cut is inset from this by `inset` along the outward normal."""
-    if len(hard_ccw_quad) != 4:
-        return []
-    a0 = _polygon_signed_area(hard_ccw_quad)
-    q = list(hard_ccw_quad) if a0 > 0 else list(reversed(hard_ccw_quad))
-    out = _offset_polygon_miter(q, [inset, inset, inset, inset])
-    for x, y in out:
-        if not (math.isfinite(x) and math.isfinite(y)):
-            return []
-    if _polygon_signed_area(out) < 0:
-        out = list(reversed(out))
+def _finished_face_rect_xy(bw: float, bh: float, sides) -> tuple[float, float, float, float]:
+    """Axis-aligned finished-face opening (ffx0, ffy0, ffx1, ffy1), y up from blank origin."""
+    eb = _ff_span_from_blank_edge(sides["bottom"])
+    et = _ff_span_from_blank_edge(sides["top"])
+    el = _ff_span_from_blank_edge(sides["left"])
+    er = _ff_span_from_blank_edge(sides["right"])
+    return el, eb, bw - er, bh - et
+
+
+def _finished_face_quad_ccw_ortho(bw: float, bh: float, sides):
+    """Four CCW corners of the ortho finished-face rectangle."""
+    ffx0, ffy0, ffx1, ffy1 = _finished_face_rect_xy(bw, bh, sides)
+    return [(ffx0, ffy0), (ffx1, ffy0), (ffx1, ffy1), (ffx0, ffy1)]
+
+
+def _pair_ff_corners_to_hc(hc4, ff4):
+    """Order FF corners to correspond to HC order (bl, br, tr, tl)."""
+    ff = list(ff4)
+    out = []
+    for hc in hc4:
+        j = min(range(len(ff)), key=lambda k: _v2_len(_v2_sub(hc, ff[k])))
+        out.append(ff.pop(j))
     return out
+
+
+def _rt_finished_face_quad(bl, br, tr, tl):
+    """Finished-face trapezoid: inset HC quad toward face by SHOP_FINISHED_FACE_INSET."""
+    hard = [bl, br, tr, tl]
+    a0 = _polygon_signed_area(hard)
+    q = list(hard) if a0 > 0 else list(reversed(hard))
+    d = SHOP_FINISHED_FACE_INSET
+    raw = _offset_polygon_miter(q, [-d, -d, -d, -d])
+    return _pair_ff_corners_to_hc(hard, raw)
+
+
+def _ff_edge_rt_dict(spec, lay, sides, ffc):
+    """Per-side finished-face references for RT slots / panel ID (replaces bend1_rt_dict)."""
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    ff_bl, ff_br, ff_tr, ff_tl = ffc
+    fx0, fy0 = bl[0], bl[1]
+    fx1 = br[0]
+    mx = (fx0 + fx1) * 0.5
+    pos = {}
+    t_top = _v2_norm(_v2_sub(ff_tr, ff_tl))
+    t_bot = _v2_norm(_v2_sub(ff_br, ff_bl))
+
+    def y_on_ray(p0, t, xq):
+        if abs(t[0]) < 1e-12:
+            return p0[1]
+        s = (xq - p0[0]) / t[0]
+        return p0[1] + s * t[1]
+
+    if sides["bottom"].active:
+        if spec.rt_opposing_edge == "top":
+            pos["bottom"] = ff_bl[1]
+        else:
+            pos["bottom"] = y_on_ray(ff_bl, t_bot, mx)
+    if sides["top"].active:
+        if spec.rt_opposing_edge == "top":
+            pos["top"] = y_on_ray(ff_tl, t_top, mx)
+        else:
+            pos["top"] = max(ff_tr[1], ff_tl[1])
+    if sides["left"].active:
+        pos["left"] = ff_bl[0]
+    if sides["right"].active:
+        pos["right"] = ff_br[0]
+    return pos
 
 
 def _translate_poly(pts, dx, dy):
@@ -775,16 +832,16 @@ def _point_in_convex_quad(px, py, bl, br, tr, tl):
     return True
 
 
-def _hole_centers_rt(fx0, fx1, bl, br, tr, tl,
+def _hole_centers_rt(fx0, fx1, fbl, fbr, ftr, ftl,
                      hole_dia, pitch, pattern, stagger_angle, margin):
-    """Hole grid in the axis-aligned face bbox, filtered to the trapezoid."""
-    min_y = min(bl[1], br[1], tr[1], tl[1])
-    max_y = max(bl[1], br[1], tr[1], tl[1])
+    """Hole grid in the axis-aligned bbox of the finished-face quad, filtered to that quad."""
+    min_y = min(fbl[1], fbr[1], ftr[1], ftl[1])
+    max_y = max(fbl[1], fbr[1], ftr[1], ftl[1])
     raw = _hole_centers(
         fx0, min_y, fx1 - fx0, max_y - min_y,
         hole_dia, pitch, pattern, stagger_angle, margin,
     )
-    out = [(x, y) for x, y in raw if _point_in_convex_quad(x, y, bl, br, tr, tl)]
+    out = [(x, y) for x, y in raw if _point_in_convex_quad(x, y, fbl, fbr, ftr, ftl)]
     if not out and raw:
         out = [raw[0]]
     return out
@@ -1456,34 +1513,6 @@ def _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
     return pos
 
 
-def _draw_bend_lines(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
-    """
-    Bend 1 CL: BA/2 outward from hard corner (creates leg depth)
-    Bend 2 CL: f2 from blank edge (J return lip)
-    """
-    sd = sides
-    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
-    # Bend 1 CL - BA/2 outside each hard corner edge
-    if sd["bottom"].active:
-        _add_line(msp, fx0, bend1["bottom"], fx1, bend1["bottom"], "bend")
-    if sd["top"].active:
-        _add_line(msp, fx0, bend1["top"], fx1, bend1["top"], "bend")
-    if sd["left"].active:
-        _add_line(msp, bend1["left"], fy0, bend1["left"], fy1, "bend")
-    if sd["right"].active:
-        _add_line(msp, bend1["right"], fy0, bend1["right"], fy1, "bend")
-
-    # Bend 2 CL - f2 from blank edge, J sides only
-    if sd["bottom"].active and sd["bottom"].ftype=="J" and sd["bottom"].f2>0:
-        _add_line(msp, fx0, sd["bottom"].f2, fx1, sd["bottom"].f2, "bend")
-    if sd["top"].active and sd["top"].ftype=="J" and sd["top"].f2>0:
-        _add_line(msp, fx0, blank_h-sd["top"].f2, fx1, blank_h-sd["top"].f2, "bend")
-    if sd["left"].active and sd["left"].ftype=="J" and sd["left"].f2>0:
-        _add_line(msp, sd["left"].f2, fy0, sd["left"].f2, fy1, "bend")
-    if sd["right"].active and sd["right"].ftype=="J" and sd["right"].f2>0:
-        _add_line(msp, blank_w-sd["right"].f2, fy0, blank_w-sd["right"].f2, fy1, "bend")
-
-
 # ---------------------------------------------------------------------------
 # Fastening slots
 # ---------------------------------------------------------------------------
@@ -1560,22 +1589,22 @@ def _preferred_id_side(sides):
     return None
 
 
-def _j_slot_normal_center(side_name, bend1, face_holes, bd):
+def _j_slot_normal_center(side_name, flange_line, face_holes, bd):
     if not face_holes:
-        return bend1[side_name]
+        return flange_line[side_name]
 
     if side_name == "left":
         nearest = min(x for x, _ in face_holes)
-        return bend1[side_name] - ((nearest - bend1[side_name]) + bd)
+        return flange_line[side_name] - ((nearest - flange_line[side_name]) + bd)
     if side_name == "right":
         nearest = max(x for x, _ in face_holes)
-        return bend1[side_name] + ((bend1[side_name] - nearest) + bd)
+        return flange_line[side_name] + ((flange_line[side_name] - nearest) + bd)
     if side_name == "bottom":
         nearest = min(y for _, y in face_holes)
-        return bend1[side_name] - ((nearest - bend1[side_name]) + bd)
+        return flange_line[side_name] - ((nearest - flange_line[side_name]) + bd)
 
     nearest = max(y for _, y in face_holes)
-    return bend1[side_name] + ((bend1[side_name] - nearest) + bd)
+    return flange_line[side_name] + ((flange_line[side_name] - nearest) + bd)
 
 
 def _holes_on_same_row(face_holes, y, tol=1e-6):
@@ -1591,7 +1620,7 @@ def _panel_id_along_coordinate(start, span, slot_centers, has_slots, slot_length
 
     When this side has fastening slots, keep the label past the first slot (from
     the low-x / low-y flange start) and at least PANEL_ID_CLEAR_FROM_FLANGE_END
-    from that end so it does not sit in the first slot (2\" margin + slot).
+    from that end so it does not sit in the first slot (2" margin + slot).
     Otherwise center on the flange span.
     """
     if not has_slots or not slot_centers:
@@ -1606,7 +1635,7 @@ def _panel_id_along_coordinate(start, span, slot_centers, has_slots, slot_length
     return along
 
 
-def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length):
+def _panel_id_anchor(spec, sides, ff_edge, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length):
     side_name = _preferred_id_side(sides)
     if not side_name:
         return None
@@ -1626,7 +1655,7 @@ def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, b
         normal = (
             (sd.f2 / 2.0) if side_name == "bottom" else (blank_h - sd.f2 / 2.0)
             if sd.ftype == "J"
-            else ((bend1[side_name] / 2.0) if side_name == "bottom" else ((blank_h + bend1[side_name]) / 2.0))
+            else ((ff_edge[side_name] / 2.0) if side_name == "bottom" else ((blank_h + ff_edge[side_name]) / 2.0))
         )
         return {
             "side": side_name,
@@ -1647,7 +1676,7 @@ def _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, b
     normal = (
         (sd.f2 / 2.0) if side_name == "left" else (blank_w - sd.f2 / 2.0)
         if sd.ftype == "J"
-        else ((bend1[side_name] / 2.0) if side_name == "left" else ((blank_w + bend1[side_name]) / 2.0))
+        else ((ff_edge[side_name] / 2.0) if side_name == "left" else ((blank_w + ff_edge[side_name]) / 2.0))
     )
     return {
         "side": side_name,
@@ -1688,9 +1717,9 @@ def _draw_stick_text(msp, text, x, y, height, rotation_deg, layer):
         cursor_x += advance
 
 
-def _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd):
+def _draw_panel_id_text(doc, msp, spec, sides, ff_edge, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd):
     slot_length = spec.slot_length if spec.slot_length is not None else (spec.fastener_dia + INSTALL_SLOT_EXTRA)
-    anchor = _panel_id_anchor(spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length)
+    anchor = _panel_id_anchor(spec, sides, ff_edge, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length)
     if not anchor:
         return
 
@@ -1705,12 +1734,12 @@ def _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face
     )
 
 
-def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
-                          sides, blank_w, blank_h, ba2, bd):
+def _draw_fastening_slots(msp, spec, ffx0, ffy0, ffx1, ffy1, face_w, face_h,
+                          sides, blank_w, blank_h, bd):
     active=_fastening_sides(spec,sides)
     if not active: return
-    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
-    face_holes=_hole_centers(fx0,fy0,face_w,face_h,
+    ff_edge = {"left": ffx0, "bottom": ffy0, "right": ffx1, "top": ffy1}
+    face_holes=_hole_centers(ffx0,ffy0,face_w,face_h,
                              spec.hole_dia,spec.pitch,spec.pattern,
                              spec.stagger_angle,spec.margin)
     fdia=spec.fastener_dia
@@ -1723,12 +1752,12 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
                 xs=_aligned_positions([c[0] for c in face_holes])
                 for px in xs:
                     col_holes = _holes_on_same_col(face_holes, px)
-                    hy = _j_slot_normal_center(sn, bend1, col_holes or face_holes, bd)
+                    hy = _j_slot_normal_center(sn, ff_edge, col_holes or face_holes, bd)
                     _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
                 continue
             else:
-                hy=(bend1[sn]/2.0) if is_b else ((blank_h + bend1[sn]) / 2.0)
-                xs=[fx0+p for p in _l_positions(face_w)]
+                hy=(ff_edge[sn]/2.0) if is_b else ((blank_h + ff_edge[sn]) / 2.0)
+                xs=[ffx0+p for p in _l_positions(face_w)]
             for px in xs:
                 _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
         else:
@@ -1737,12 +1766,12 @@ def _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
                 ys=_aligned_positions([c[1] for c in face_holes])
                 for py in ys:
                     row_holes = _holes_on_same_row(face_holes, py)
-                    hx = _j_slot_normal_center(sn, bend1, row_holes or face_holes, bd)
+                    hx = _j_slot_normal_center(sn, ff_edge, row_holes or face_holes, bd)
                     _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
                 continue
             else:
-                hx=(bend1[sn]/2.0) if is_l else ((blank_w + bend1[sn]) / 2.0)
-                ys=[fy0+p for p in _l_positions(face_h)]
+                hx=(ff_edge[sn]/2.0) if is_l else ((blank_w + ff_edge[sn]) / 2.0)
+                ys=[ffy0+p for p in _l_positions(face_h)]
             for py in ys:
                 _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
 
@@ -1766,102 +1795,6 @@ def _add_slot_axis(msp, cx, cy, width, length, tx, ty, layer):
     msp.add_lwpolyline(pts, format="xyb", close=True, dxfattribs={"layer": layer})
 
 
-def _bend1_rt_dict(spec, lay, sides, ba2):
-    """Scalar bend1 references for slots / panel ID (mid-span on slanted edges)."""
-    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
-    centroid = _rt_face_centroid(bl, br, tr, tl)
-    fx0, fy0 = bl[0], bl[1]
-    fx1 = br[0]
-    mx = (fx0 + fx1) * 0.5
-    pos = {}
-    n_top_in = _inward_normal_edge(tl, tr, centroid)
-    t_top = _v2_norm(_v2_sub(tr, tl))
-    b1_top_p = _v2_add(tl, _v2_scale(n_top_in, ba2))
-    n_bot_in = _inward_normal_edge(bl, br, centroid)
-    t_bot = _v2_norm(_v2_sub(br, bl))
-    b1_bot_p = _v2_add(bl, _v2_scale(n_bot_in, ba2))
-
-    def y_on_ray(p0, t, xq):
-        if abs(t[0]) < 1e-12:
-            return p0[1]
-        s = (xq - p0[0]) / t[0]
-        return p0[1] + s * t[1]
-
-    if sides["bottom"].active:
-        if spec.rt_opposing_edge == "top":
-            pos["bottom"] = fy0 - ba2
-        else:
-            pos["bottom"] = y_on_ray(b1_bot_p, t_bot, mx)
-    if sides["top"].active:
-        if spec.rt_opposing_edge == "top":
-            pos["top"] = y_on_ray(b1_top_p, t_top, mx)
-        else:
-            pos["top"] = tr[1] + ba2
-    if sides["left"].active:
-        pos["left"] = fx0 - ba2
-    if sides["right"].active:
-        pos["right"] = fx1 + ba2
-    return pos
-
-
-def _draw_bend_lines_rt(msp, spec, lay, sides, ba2, blank_w, blank_h):
-    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
-    fx0, fy0 = bl[0], bl[1]
-    fx1 = br[0]
-    centroid = _rt_face_centroid(bl, br, tr, tl)
-    sd = sides
-    if spec.rt_opposing_edge == "top":
-        if sd["bottom"].active:
-            _add_line(msp, fx0, fy0 - ba2, fx1, fy0 - ba2, "bend")
-        if sd["top"].active:
-            n_top_in = _inward_normal_edge(tl, tr, centroid)
-            p0 = _v2_add(tl, _v2_scale(n_top_in, ba2))
-            p1 = _v2_add(tr, _v2_scale(n_top_in, ba2))
-            _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
-        if sd["left"].active:
-            _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
-        if sd["right"].active:
-            _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
-        if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
-            _add_line(msp, fx0, sd["bottom"].f2, fx1, sd["bottom"].f2, "bend")
-        if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
-            o = lay["outer"]
-            tl_o, tr_o = o[3], o[2]
-            n = _v2_norm(_perp_outward_ccw(tl_o, tr_o))
-            if _v2_dot(n, _v2_sub(centroid, _v2_scale(_v2_add(tl_o, tr_o), 0.5))) > 0:
-                n = _v2_neg(n)
-            q0 = _v2_add(tl_o, _v2_scale(n, -sd["top"].f2))
-            q1 = _v2_add(tr_o, _v2_scale(n, -sd["top"].f2))
-            _add_line(msp, q0[0], q0[1], q1[0], q1[1], "bend")
-    else:
-        n_bot_in = _inward_normal_edge(bl, br, centroid)
-        p0 = _v2_add(bl, _v2_scale(n_bot_in, ba2))
-        p1 = _v2_add(br, _v2_scale(n_bot_in, ba2))
-        if sd["bottom"].active:
-            _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
-        if sd["top"].active:
-            _add_line(msp, fx0, tr[1] + ba2, fx1, tr[1] + ba2, "bend")
-        if sd["left"].active:
-            _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
-        if sd["right"].active:
-            _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
-        if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
-            o = lay["outer"]
-            bl_o, br_o = o[0], o[1]
-            n = _v2_norm(_perp_outward_ccw(bl_o, br_o))
-            if _v2_dot(n, _v2_sub(centroid, _v2_scale(_v2_add(bl_o, br_o), 0.5))) > 0:
-                n = _v2_neg(n)
-            q0 = _v2_add(bl_o, _v2_scale(n, -sd["bottom"].f2))
-            q1 = _v2_add(br_o, _v2_scale(n, -sd["bottom"].f2))
-            _add_line(msp, q0[0], q0[1], q1[0], q1[1], "bend")
-        if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
-            _add_line(msp, fx0, blank_h - sd["top"].f2, fx1, blank_h - sd["top"].f2, "bend")
-    if sd["left"].active and sd["left"].ftype == "J" and sd["left"].f2 > 0:
-        _add_line(msp, sd["left"].f2, min(bl[1], tl[1]), sd["left"].f2, max(bl[1], tl[1]), "bend")
-    if sd["right"].active and sd["right"].ftype == "J" and sd["right"].f2 > 0:
-        _add_line(msp, blank_w - sd["right"].f2, min(br[1], tr[1]), blank_w - sd["right"].f2, max(br[1], tr[1]), "bend")
-
-
 def _y_on_edge_at_x(p0, p1, xq):
     if abs(p1[0] - p0[0]) < 1e-12:
         return (p0[1] + p1[1]) * 0.5
@@ -1869,23 +1802,21 @@ def _y_on_edge_at_x(p0, p1, xq):
     return p0[1] + t * (p1[1] - p0[1])
 
 
-def _draw_fastening_slots_rt(msp, spec, lay, bend1, sides, blank_w, blank_h, ba2, bd, face_holes):
+def _draw_fastening_slots_rt(msp, spec, lay, ff_dict, ffc, sides, blank_w, blank_h, bd, face_holes):
     active = _fastening_sides(spec, sides)
     if not active:
         return
     bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    ff_bl, ff_br, ff_tr, ff_tl = ffc
     fx0, fy0 = bl[0], bl[1]
     fx1 = br[0]
     face_w = fx1 - fx0
-    min_y = min(bl[1], br[1], tr[1], tl[1])
-    max_y = max(bl[1], br[1], tr[1], tl[1])
+    min_y = min(ff_bl[1], ff_br[1], ff_tr[1], ff_tl[1])
+    max_y = max(ff_bl[1], ff_br[1], ff_tr[1], ff_tl[1])
     face_h = max_y - min_y
     fdia = spec.fastener_dia
     flen = spec.slot_length if spec.slot_length is not None else (fdia + INSTALL_SLOT_EXTRA)
-    centroid = _rt_face_centroid(bl, br, tr, tl)
-    n_top_in = _inward_normal_edge(tl, tr, centroid)
-    t_top = _v2_norm(_v2_sub(tr, tl))
-    b1_top_p = _v2_add(tl, _v2_scale(n_top_in, ba2))
+    t_top = _v2_norm(_v2_sub(ff_tr, ff_tl))
     o = lay["outer"]
 
     for sn in active:
@@ -1895,18 +1826,18 @@ def _draw_fastening_slots_rt(msp, spec, lay, bend1, sides, blank_w, blank_h, ba2
                 xs = _aligned_positions([c[0] for c in face_holes])
                 for px in xs:
                     col = _holes_on_same_col(face_holes, px)
-                    hy = _j_slot_normal_center(sn, bend1, col or face_holes, bd)
+                    hy = _j_slot_normal_center(sn, ff_dict, col or face_holes, bd)
                     _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
                 continue
             if sn == "top" and spec.rt_opposing_edge == "top" and sd.ftype == "L":
                 tl_o, tr_o = o[3], o[2]
                 for px in [fx0 + p for p in _l_positions(face_w)]:
-                    yb = _y_on_edge_at_x(b1_top_p, _v2_add(b1_top_p, t_top), px)
+                    yb = _y_on_edge_at_x(ff_tl, ff_tr, px)
                     yo = _y_on_edge_at_x(tl_o, tr_o, px)
                     cy = (yb + yo) * 0.5
                     _add_slot_axis(msp, px, cy, fdia, flen, t_top[0], t_top[1], "fastening")
                 continue
-            hy = (bend1[sn] / 2.0) if sn == "bottom" else ((blank_h + bend1[sn]) / 2.0)
+            hy = (ff_dict[sn] / 2.0) if sn == "bottom" else ((blank_h + ff_dict[sn]) / 2.0)
             for px in [fx0 + p for p in _l_positions(face_w)]:
                 _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
         else:
@@ -1914,10 +1845,10 @@ def _draw_fastening_slots_rt(msp, spec, lay, bend1, sides, blank_w, blank_h, ba2
                 ys = _aligned_positions([c[1] for c in face_holes])
                 for py in ys:
                     row = _holes_on_same_row(face_holes, py)
-                    hx = _j_slot_normal_center(sn, bend1, row or face_holes, bd)
+                    hx = _j_slot_normal_center(sn, ff_dict, row or face_holes, bd)
                     _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
                 continue
-            hx = (bend1[sn] / 2.0) if sn == "left" else ((blank_w + bend1[sn]) / 2.0)
+            hx = (ff_dict[sn] / 2.0) if sn == "left" else ((blank_w + ff_dict[sn]) / 2.0)
             for py in [min_y + p for p in _l_positions(face_h)]:
                 _add_slot(msp, hx, py, fdia, flen, "vertical", "fastening")
 
@@ -1955,7 +1886,6 @@ def generate_panel_dxf(spec, outdir):
         ("cut", 1),
         ("holes", 2),
         ("fastening", 5),
-        ("bend", 3),
         ("text", 6),
         ("finished_face", 8),
     ]:
@@ -1974,21 +1904,22 @@ def generate_panel_dxf(spec, outdir):
         face_h = max(tl[1], tr[1]) - min(bl[1], br[1])
         pts = _blank_outline_rt(spec, bw, bh, sides, bd, ba2, notch_size, gap, lay)
         msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
-        ff = _finished_face_outline_from_hard_perimeter(lay["outer"])
-        if ff:
-            msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
-        bend1 = _bend1_rt_dict(spec, lay, sides, ba2)
+        ffc = _rt_finished_face_quad(bl, br, tr, tl)
+        msp.add_lwpolyline(ffc, close=True, dxfattribs={"layer": "finished_face"})
+        ff_dict = _ff_edge_rt_dict(spec, lay, sides, ffc)
         _draw_corner_reliefs(msp, fx0, fy0, fx1, fy0 + face_h, bw, bh, sides, r, t, ba2)
-        _draw_bend_lines_rt(msp, spec, lay, sides, ba2, bw, bh)
         face_holes = _hole_centers_rt(
-            fx0, fx1, bl, br, tr, tl,
+            fx0, fx1, ffc[0], ffc[1], ffc[2], ffc[3],
             spec.hole_dia, spec.pitch, spec.pattern,
             spec.stagger_angle, spec.margin,
         )
         for x, y in face_holes:
             msp.add_circle((x, y), spec.hole_dia / 2.0, dxfattribs={"layer": "holes"})
-        _draw_fastening_slots_rt(msp, spec, lay, bend1, sides, bw, bh, ba2, bd, face_holes)
-        _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, bw, bh, bd)
+        min_ffy = min(p[1] for p in ffc)
+        max_ffy = max(p[1] for p in ffc)
+        ff_face_h = max_ffy - min_ffy
+        _draw_fastening_slots_rt(msp, spec, lay, ff_dict, ffc, sides, bw, bh, bd, face_holes)
+        _draw_panel_id_text(doc, msp, spec, sides, ff_dict, face_holes, fx0, min_ffy, face_w, ff_face_h, bw, bh, bd)
         os.makedirs(outdir, exist_ok=True)
         doc.saveas(os.path.join(outdir, f"{spec.panel_id}.dxf"))
         return
@@ -2002,28 +1933,27 @@ def generate_panel_dxf(spec, outdir):
     fy0 = eb + bd
     fx1 = bw - er - bd
     fy1 = bh - et - bd
-    face_w = fx1 - fx0
-    face_h = fy1 - fy0
+    ffx0, ffy0, ffx1, ffy1 = _finished_face_rect_xy(bw, bh, sides)
+    face_w = ffx1 - ffx0
+    face_h = ffy1 - ffy0
+    ff_edge = {"left": ffx0, "bottom": ffy0, "right": ffx1, "top": ffy1}
     pts = _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap)
     msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
-    ff = _finished_face_outline_from_hard_perimeter(_orthogonal_blank_hard_corners(bw, bh))
-    if ff:
-        msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
+    ff = _finished_face_quad_ccw_ortho(bw, bh, sides)
+    msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
 
-    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, bw, bh, sides, ba2)
-    _draw_corner_reliefs(msp,fx0,fy0,fx1,fy1,bw,bh,sides,r,t,ba2)
-    _draw_bend_lines(msp,fx0,fy0,fx1,fy1,bw,bh,sides,ba2)
+    _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, bw, bh, sides, r, t, ba2)
 
     face_holes = _hole_centers(
-        fx0, fy0, face_w, face_h,
+        ffx0, ffy0, face_w, face_h,
         spec.hole_dia, spec.pitch, spec.pattern,
         spec.stagger_angle, spec.margin,
     )
-    for x,y in face_holes:
-        msp.add_circle((x,y),spec.hole_dia/2.0,dxfattribs={"layer":"holes"})
+    for x, y in face_holes:
+        msp.add_circle((x, y), spec.hole_dia / 2.0, dxfattribs={"layer": "holes"})
 
-    _draw_fastening_slots(msp,spec,fx0,fy0,fx1,fy1,face_w,face_h,sides,bw,bh,ba2,bd)
-    _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, fx0, fy0, face_w, face_h, bw, bh, bd)
+    _draw_fastening_slots(msp, spec, ffx0, ffy0, ffx1, ffy1, face_w, face_h, sides, bw, bh, bd)
+    _draw_panel_id_text(doc, msp, spec, sides, ff_edge, face_holes, ffx0, ffy0, face_w, face_h, bw, bh, bd)
 
     os.makedirs(outdir,exist_ok=True)
     doc.saveas(os.path.join(outdir,f"{spec.panel_id}.dxf"))

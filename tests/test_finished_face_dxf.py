@@ -1,4 +1,4 @@
-"""DXF `finished_face` layer: shop datum outline offset outward from perimeter cut."""
+"""DXF `finished_face` layer: shop finished-face rectangle (not bend CL, not cut poly offset)."""
 import os
 import tempfile
 import unittest
@@ -8,7 +8,11 @@ import ezdxf
 from screenwall_generator import (
     PanelSpec,
     SHOP_FINISHED_FACE_INSET,
+    _ff_span_from_blank_edge,
+    _finished_face_rect_xy,
+    flat_size,
     generate_panel_dxf,
+    resolve_sides,
 )
 
 
@@ -32,7 +36,7 @@ def _bbox(pts):
 
 
 class FinishedFaceDxfTests(unittest.TestCase):
-    def test_l4s_finished_face_layer_and_outset(self):
+    def test_l4s_finished_face_layer_matches_ff_span(self):
         s = PanelSpec(
             panel_id="UNIT_FF_L4S",
             face_width=24,
@@ -47,6 +51,11 @@ class FinishedFaceDxfTests(unittest.TestCase):
             pattern="straight",
             fastening_pair="tb",
         )
+        sides = resolve_sides(s)
+        bw, bh = flat_size(s)
+        ffx0, ffy0, ffx1, ffy1 = _finished_face_rect_xy(bw, bh, sides)
+        span_b = _ff_span_from_blank_edge(sides["bottom"])
+        span_l = _ff_span_from_blank_edge(sides["left"])
         td = tempfile.mkdtemp()
         try:
             generate_panel_dxf(s, td)
@@ -57,14 +66,22 @@ class FinishedFaceDxfTests(unittest.TestCase):
             ff = _lwpolys_on_layer(path, "finished_face")
             self.assertEqual(len(cut), 1)
             self.assertEqual(len(ff), 1)
-            self.assertEqual(len(ff[0]), 4, "finished face is a four-sided hard-perimeter loop")
-            d = SHOP_FINISHED_FACE_INSET
+            self.assertEqual(len(ff[0]), 4)
+            bx0, by0, bx1, by1 = _bbox(ff[0])
+            self.assertAlmostEqual(bx0, ffx0, places=5)
+            self.assertAlmostEqual(by0, ffy0, places=5)
+            self.assertAlmostEqual(bx1, ffx1, places=5)
+            self.assertAlmostEqual(by1, ffy1, places=5)
+            self.assertAlmostEqual(by0, span_b, places=5)
+            self.assertAlmostEqual(bx0, span_l, places=5)
+            # Finished face lies strictly inside the blank envelope when flanges exist
             mx0, my0, mx1, my1 = _bbox(cut[0])
-            fx0, fy0, fx1, fy1 = _bbox(ff[0])
-            self.assertLessEqual(fx0, mx0 - d + 1e-5)
-            self.assertLessEqual(fy0, my0 - d + 1e-5)
-            self.assertGreaterEqual(fx1, mx1 + d - 1e-5)
-            self.assertGreaterEqual(fy1, my1 + d - 1e-5)
+            self.assertGreater(bx0, mx0 + 1e-6)
+            self.assertGreater(by0, my0 + 1e-6)
+            self.assertLess(bx1, mx1 - 1e-6)
+            self.assertLess(by1, my1 - 1e-6)
+            # Inset toward face from developed run (f1+f2)
+            self.assertGreater(sides["bottom"].f1, by0 + SHOP_FINISHED_FACE_INSET - 1e-6)
         finally:
             os.unlink(os.path.join(td, "UNIT_FF_L4S.dxf"))
             os.rmdir(td)
