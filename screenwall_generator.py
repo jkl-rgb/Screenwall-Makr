@@ -258,7 +258,8 @@ def _thickness_to_float(v, material: str = "aluminum", alloy: str = "3003"):
 
 def _read_csv_text(path: str) -> str:
     """Read CSV-like text from common spreadsheet encodings."""
-    raw_bytes = open(path, "rb").read()
+    with open(path, "rb") as f:
+        raw_bytes = f.read()
     for encoding in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be"):
         try:
             text = raw_bytes.decode(encoding)
