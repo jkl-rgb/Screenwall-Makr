@@ -33,7 +33,7 @@ MATERIAL_TABLE = {
     ("3003", 0.2500): {"r": 0.2500, "k": 0.42},
     # 5052-H32 Aluminum
     ("5052", 0.1250): {"r": 0.1250, "k": 0.40},
-    ("5052", 0.1875): {"r": 0.1250, "k": 0.37},  # tight bend
+    ("5052", 0.1875): {"r": 0.0625, "k": 0.32},  # shop tight punch + K32; aligns SHOP_FLAT_CALIBRATION_REF
     # 6061-T6 Aluminum (large radii required - 1.5T to 2.0T)
     ("6061", 0.0600): {"r": 0.0900, "k": 0.40},
     ("6061", 0.0800): {"r": 0.1250, "k": 0.41},
@@ -52,6 +52,40 @@ MATERIAL_TABLE = {
 # Fallback: r = thickness, k = 0.33 (conservative default)
 K_DEFAULT          = 0.33
 BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
+
+# ---------------------------------------------------------------------------
+# Shop flat artwork (finished face + perimeter inset) vs bend-line theory
+#
+# Shop datum: theoretical finished face. Perimeter cut is INSET 0.195" from
+# that face (cut = face − 0.195″ along the inset normal). Flat flange is
+# measured OUTWARD from the finished face.
+#
+# Calibration coupon: 5052, 0.1875″, tight punch / shop practice; reference
+# bend model for the *anchor* theory term uses r=0.0625″, k=0.32 (K32) at
+# ref_t so that other alloys/gauges inherit deltas from MATERIAL_TABLE r,k,t.
+#
+# L: F1_od = 2.000″ → flat from cut to outside L flange = 1.859″.
+# J: F1_od = 2.000″, F2_od = 1.750″ → cut to first bend flat run = 1.691″,
+#    cut to outside J = 3.274″ (return flat = 1.583″ at these nominals).
+#
+# When spec.shop_flat_mode == "auto", developed f1/f2 use:
+#   ratio = shop_ratio_ref + (theory(F_ref,r,k,t)/F_ref − theory(F_ref,rr,kr,tr)/F_ref)
+# so at the anchor (rr,kr,tr) the shop numbers are recovered; other materials
+# shift with the same relative change in bend theory.
+# ---------------------------------------------------------------------------
+SHOP_FINISHED_FACE_INSET = 0.195  # perimeter cut inset from finished face (inches)
+
+SHOP_FLAT_CALIBRATION_REF = {
+    "ref_r": 0.0625,
+    "ref_k": 0.32,
+    "ref_t": 0.1875,
+    "ref_f1_od": 2.0,
+    "ref_f2_od": 1.75,
+    # Normalized developed flat from *perimeter cut* to outside along flange
+    "L_flat_over_f1_od": 1.859 / 2.0,
+    "J_f1_flat_over_f1_od": 1.691 / 2.0,
+    "J_f2_flat_over_f2_od": (3.274 - 1.691) / 1.75,
+}
 
 # Section 6 / Section 9 corner-relief constants
 RELIEF_BUFFER     = 0.010  # tolerance buffer added to OSS face notch (machine-drift guard)
@@ -164,6 +198,9 @@ class PanelSpec:
     rt_opposing_edge: Optional[str] = None  # "top" | "bottom"
     rt_leg_left: Optional[float] = None
     rt_leg_right: Optional[float] = None
+    # "off" = pure bend-line theory (_flat_leg_L / _flat_leg_J / _flat_lip).
+    # "auto" = shop artwork cut-line flats blended with theory across materials.
+    shop_flat_mode: str = "auto"
 
 
 def _to_float(v, default=0.0):
@@ -307,6 +344,11 @@ def parse_csv(path):
             raise ValueError(
                 f"Row {i}: fastening_pair must be one of {sorted(FASTENING_PAIR_VALUES)}"
             )
+        shop_flat_mode = (row.get("shop_flat_mode") or "auto").strip().lower()
+        if shop_flat_mode not in ("off", "auto"):
+            raise ValueError(
+                f"Row {i}: shop_flat_mode must be off or auto (got {shop_flat_mode!r})."
+            )
         material_key = (row.get("material") or "aluminum").strip().lower()
         alloy_key = (row.get("alloy") or "3003").strip()
         fastener_dia = _to_float(
@@ -373,6 +415,7 @@ def parse_csv(path):
             rt_opposing_edge=rt_edge or None,
             rt_leg_left=rt_ll,
             rt_leg_right=rt_lr,
+            shop_flat_mode=shop_flat_mode,
         ))
     return out
 
@@ -434,6 +477,74 @@ def _flat_leg_L(nominal, r, k, t):
     Equivalent to nominal - BD/2 + BA/2; the older nominal - BD/2 form was
     short by BA/2 (~0.147\" here) vs Fusion / bend-tangent layout."""
     return max(nominal - (r + t) + 2.0 * _ba_half(r, k, t), 0.0)
+
+
+def _shop_flat_mode(spec: PanelSpec) -> str:
+    return (getattr(spec, "shop_flat_mode", "auto") or "auto").strip().lower()
+
+
+def _shop_blend_ratio(
+    shop_ratio_at_ref: float,
+    F_ref: float,
+    theory_flat_fn,
+    r: float,
+    k: float,
+    t: float,
+) -> float:
+    """Blend shop cut-line / nominal ratio with relative bend-theory change vs ref (r,k,t)."""
+    ref = SHOP_FLAT_CALIBRATION_REF
+    rr, kr, tr = ref["ref_r"], ref["ref_k"], ref["ref_t"]
+    den = F_ref if abs(F_ref) > 1e-12 else 1.0
+    t_ref = theory_flat_fn(F_ref, rr, kr, tr) / den
+    t_now = theory_flat_fn(F_ref, r, k, t) / den
+    return shop_ratio_at_ref + (t_now - t_ref)
+
+
+def _developed_leg_L(spec: PanelSpec, F1_nom: float, rules: dict) -> float:
+    if _shop_flat_mode(spec) != "auto":
+        return _flat_leg_L(F1_nom, rules["r"], rules["k"], spec.thickness)
+    ref = SHOP_FLAT_CALIBRATION_REF
+    rat = _shop_blend_ratio(
+        ref["L_flat_over_f1_od"],
+        ref["ref_f1_od"],
+        _flat_leg_L,
+        rules["r"],
+        rules["k"],
+        spec.thickness,
+    )
+    return max(F1_nom * rat, 0.0)
+
+
+def _developed_leg_J(spec: PanelSpec, F1_nom: float, rules: dict) -> float:
+    if _shop_flat_mode(spec) != "auto":
+        return _flat_leg_J(F1_nom, rules["r"], rules["k"], spec.thickness)
+    ref = SHOP_FLAT_CALIBRATION_REF
+    rat = _shop_blend_ratio(
+        ref["J_f1_flat_over_f1_od"],
+        ref["ref_f1_od"],
+        _flat_leg_J,
+        rules["r"],
+        rules["k"],
+        spec.thickness,
+    )
+    return max(F1_nom * rat, 0.0)
+
+
+def _developed_lip_J(spec: PanelSpec, F2_nom: float, rules: dict) -> float:
+    if F2_nom <= 0:
+        return 0.0
+    if _shop_flat_mode(spec) != "auto":
+        return _flat_lip(F2_nom, rules["r"], rules["k"], spec.thickness)
+    ref = SHOP_FLAT_CALIBRATION_REF
+    rat = _shop_blend_ratio(
+        ref["J_f2_flat_over_f2_od"],
+        ref["ref_f2_od"],
+        _flat_lip,
+        rules["r"],
+        rules["k"],
+        spec.thickness,
+    )
+    return max(F2_nom * rat, 0.0)
 
 
 def _is_right_trapezoid(spec: PanelSpec) -> bool:
@@ -648,13 +759,22 @@ def resolve_sides(spec):
     k, r, t = rules["k"], rules["r"], spec.thickness
 
     def J(f1n, f2n):
-        return SideDef(True, "J", _flat_leg_J(f1n,r,k,t), _flat_lip(f2n,r,k,t))
+        return SideDef(
+            True,
+            "J",
+            _developed_leg_J(spec, f1n, rules),
+            _developed_lip_J(spec, f2n, rules),
+        )
+
     def L(f1n):
-        return SideDef(True, "L", _flat_leg_L(f1n,r,k,t), 0.0)
+        return SideDef(True, "L", _developed_leg_L(spec, f1n, rules), 0.0)
+
     def OFF():
         return SideDef(False, "L", 0.0, 0.0)
 
-    c=spec.flange_code; f1=spec.flange1_depth; f2=spec.flange2_depth or 0.0
+    c = spec.flange_code
+    f1 = spec.flange1_depth
+    f2 = spec.flange2_depth or 0.0
 
     if c == "L4S":
         sd = L(f1)
@@ -668,19 +788,25 @@ def resolve_sides(spec):
     if c == "RT4J":
         sd = J(f1, f2)
         return {s: sd for s in ("top", "bottom", "left", "right")}
-    if c=="L2TB": return {"top":L(f1),"bottom":L(f1),"left":OFF(),"right":OFF()}
-    if c=="J2TB": return {"top":J(f1,f2),"bottom":J(f1,f2),"left":OFF(),"right":OFF()}
-    if c=="L2LR": return {"top":OFF(),"bottom":OFF(),"left":L(f1),"right":L(f1)}
-    if c=="J2LR": return {"top":OFF(),"bottom":OFF(),"left":J(f1,f2),"right":J(f1,f2)}
+    if c == "L2TB":
+        return {"top": L(f1), "bottom": L(f1), "left": OFF(), "right": OFF()}
+    if c == "J2TB":
+        return {"top": J(f1, f2), "bottom": J(f1, f2), "left": OFF(), "right": OFF()}
+    if c == "L2LR":
+        return {"top": OFF(), "bottom": OFF(), "left": L(f1), "right": L(f1)}
+    if c == "J2LR":
+        return {"top": OFF(), "bottom": OFF(), "left": J(f1, f2), "right": J(f1, f2)}
 
     def _mix(active, ft, n1, n2):
-        if not active: return OFF()
-        return J(n1,n2) if ft=="J" else L(n1)
+        if not active:
+            return OFF()
+        return J(n1, n2) if ft == "J" else L(n1)
+
     return {
-        "top":    _mix(spec.top_f1>0,    spec.top_type,    spec.top_f1,    spec.top_f2),
-        "bottom": _mix(spec.bottom_f1>0, spec.bottom_type, spec.bottom_f1, spec.bottom_f2),
-        "left":   _mix(spec.left_f1>0,   spec.left_type,   spec.left_f1,   spec.left_f2),
-        "right":  _mix(spec.right_f1>0,  spec.right_type,  spec.right_f1,  spec.right_f2),
+        "top": _mix(spec.top_f1 > 0, spec.top_type, spec.top_f1, spec.top_f2),
+        "bottom": _mix(spec.bottom_f1 > 0, spec.bottom_type, spec.bottom_f1, spec.bottom_f2),
+        "left": _mix(spec.left_f1 > 0, spec.left_type, spec.left_f1, spec.left_f2),
+        "right": _mix(spec.right_f1 > 0, spec.right_type, spec.right_f1, spec.right_f2),
     }
 
 

@@ -35,6 +35,7 @@ STANDARD_HEADERS = [
     "hole_diameter", "hole_pitch", "pattern", "fastening_pair",
     "fastener_dia", "slot_length",
     "stagger_angle", "margin",
+    "shop_flat_mode",
 ]
 
 MIX_EXTRA_HEADERS = [
@@ -55,6 +56,7 @@ STANDARD_EXAMPLE = [
     "L4S", "2.0", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
+    "auto",
     "", "", "", "", "", "", "", "", "", "", "", "",
     "", "", "",
 ]
@@ -64,6 +66,7 @@ MIX_EXAMPLE = [
     "MIX", "", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
+    "auto",
     "J", "2.0", "2.25",   # top
     "J", "2.0", "2.25",   # bottom
     "L", "2.0", "",       # left
@@ -80,6 +83,7 @@ STEEL_EXAMPLE = [
     "L4S", "2.0", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "0.75",
     "60.0", "1.25",
+    "auto",
     "", "", "", "", "", "", "", "", "", "", "", "",
     "", "", "",
 ]
@@ -89,6 +93,7 @@ RT_EXAMPLE = [
     "RT4S", "2.0", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
+    "auto",
     "", "", "", "", "", "", "", "", "", "", "", "",
     "top", "24", "30",
 ]
@@ -237,6 +242,7 @@ with st.expander("Flange code reference", expanded=False):
 - `slot_length` is optional total install slot length. Leave it blank to use the default
   `fastener_dia + 0.50"`.
 - Accepted length aliases on import: `fastener_slot_length`, `install_slot_length`.
+- `shop_flat_mode`: `auto` (default) blends shop cut-line flats (5052 / 0.1875″ calibration) with bend theory across all table materials; `off` uses pure `_flat_leg_L` / `_flat_leg_J` / `_flat_lip` only.
 - For `MIX`: set `top_type` / `bottom_type` / `left_type` / `right_type` to `L` or `J`.
   Set `*_f1` (leg depth) and `*_f2` (return lip, J only). A side with `*_f1 = 0` is a straight cut.
 - For `RT4S` / `RT4J`: set `rt_opposing_edge` to `top` or `bottom` (which parallel edge is straight in plan).
