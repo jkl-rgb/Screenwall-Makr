@@ -195,18 +195,17 @@ Where:
   Layer       Color  Content
   ----------  -----  ----------------------------------------------------------
   cut         1      Blank outline (variable vertex count; bend relief embedded)
-  bend        3      Bend 1 and Bend 2 centerlines (individual line segments)
   holes       2      Perforation circles
   fastening   5      Install slots
   text        6      Panel ID stick-font linework (no DXF TEXT entities)
+  finished_face 8   Finished-face construction loop (ortho rectangle or RT trapezoid)
 
-No bend_extent layer (removed).
+No bend_extent layer (removed). Bend 1 / Bend 2 centerlines are **not** written to
+the DXF; `_bend1_cl_positions` is used only inside `_blank_outline` corner relief math.
 
-Bend line rules:
-  Bend 1 CL: BA/2 from each hard corner toward the blank — same for L and J
-  Bend 2 CL (lip, J only): f2 inward from blank edge — 4 line segments
-  All bend lines span hard-corner-to-hard-corner width/height only
-  (not across full blank width — they stop at the face zone boundaries)
+Finished-face loop: on each active side, distance from outer blank cut to the FF
+line = `(f1+f2)_developed − SHOP_FINISHED_FACE_INSET` (0.195″ toward the face).
+Holes, install slots, and panel ID use this FF rectangle as the face datum.
 
 
 ================================================================================
@@ -283,22 +282,27 @@ Single letters L and J are normalized to L4S and J4S.
   _side_extra(sd)       f1+f2 per side — used for blank extension calculation
   flat_size(spec)       Returns (blank_w, blank_h)
 
+  _ff_span_from_blank_edge(sd)
+    Distance from outer blank cut on one side to the finished-face line:
+    max(0, (f1+f2)_developed − SHOP_FINISHED_FACE_INSET); inactive side → 0
+
+  _finished_face_rect_xy(bw, bh, sides)
+    Returns (ffx0, ffy0, ffx1, ffy1) for ortho panels — hole/slot/FF layer datum
+
   _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap=0.0)
     Returns CCW polygon point list (variable length by flange config + relief)
     notch_size: typically 2×T; gap: J+J miter apex only (gap_override / default)
-
-  _draw_bend_lines(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
-    Draws Bend 1 and Bend 2 centerlines on bend layer
+    Uses `_bend1_cl_positions` only for relief geometry inside this polygon
 
   _hole_centers(face_x, face_y, face_w, face_h, hole_dia, pitch, pattern,
                 stagger_angle, margin)
-    Returns list of (x, y) perforation centers
+    Returns list of (x, y) perforation centers (call with finished-face origin/size)
 
-  _draw_fastening_slots(msp, spec, fx0, fy0, fx1, fy1, face_w, face_h,
-                        sides, blank_w, blank_h, ba2, bd)
-    Draws install slots on fastening layer
+  _draw_fastening_slots(msp, spec, ffx0, ffy0, ffx1, ffy1, face_w, face_h,
+                        sides, blank_w, blank_h, bd)
+    Draws install slots on fastening layer (mid-flange uses finished-face edges)
 
-  _draw_panel_id_text(doc, msp, spec, sides, bend1, face_holes, ...)
+  _draw_panel_id_text(doc, msp, spec, sides, ff_edge, face_holes, ...)
     Panel ID stick-font on text layer; clears slots when ID side has fastening
 
   generate_panel_dxf(spec, outdir)
