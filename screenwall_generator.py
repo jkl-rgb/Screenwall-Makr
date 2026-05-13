@@ -60,6 +60,11 @@ BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
 # that face (cut = face − 0.195″ along the inset normal). Flat flange is
 # measured OUTWARD from the finished face.
 #
+# DXF `finished_face` layer: four **hard perimeter** corners (primary flange
+# directions at each corner, ignoring bend relief on the cut poly), closed
+# loop, offset outward by SHOP_FINISHED_FACE_INSET — not an offset of the
+# detailed cut outline.
+#
 # Calibration coupon: 5052, 0.1875″, tight punch / shop practice; reference
 # bend model for the *anchor* theory term uses r=0.0625″, k=0.32 (K32) at
 # ref_t so that other alloys/gauges inherit deltas from MATERIAL_TABLE r,k,t.
@@ -641,36 +646,27 @@ def _polygon_signed_area(pts):
     return s * 0.5
 
 
-def _finished_face_outline_from_cut(pts):
-    """Perimeter cut is inset from the theoretical finished face by SHOP_FINISHED_FACE_INSET.
-    Returns a closed CCW polyline offset outward from the cut outline (shop artwork convention).
-    Falls back to a bbox rectangle if the miter offset fails validation."""
-    if not pts or len(pts) < 3:
+def _orthogonal_blank_hard_corners(bw: float, bh: float):
+    """Hard perimeter corners for an ortho flat: primary flange lines meet here; bend relief
+    is ignored (cut outline may jog inward). CCW from blank origin."""
+    return [(0.0, 0.0), (bw, 0.0), (bw, bh), (0.0, bh)]
+
+
+def _finished_face_outline_from_hard_perimeter(hard_ccw_quad, inset=SHOP_FINISHED_FACE_INSET):
+    """Shop finished-face artwork: closed polyline parallel-offset **outward** from the
+    four hard perimeter corners (intersection of primary flange directions, ignoring relief).
+    Physical perimeter cut is inset from this by `inset` along the outward normal."""
+    if len(hard_ccw_quad) != 4:
         return []
-    d = SHOP_FINISHED_FACE_INSET
-    n = len(pts)
-    a0 = _polygon_signed_area(pts)
-    pts_ccw = pts if a0 > 0 else list(reversed(pts))
-    a_in = abs(a0)
-    out = _offset_polygon_miter(pts_ccw, [d] * n)
-
-    def _valid(poly):
-        if len(poly) != n:
-            return False
-        for x, y in poly:
-            if not (math.isfinite(x) and math.isfinite(y)):
-                return False
-        return _polygon_signed_area(poly) > a_in + 1e-9
-
-    if _valid(out):
-        return out
-    minx, miny, maxx, maxy = _poly_bbox(pts)
-    return [
-        (minx - d, miny - d),
-        (maxx + d, miny - d),
-        (maxx + d, maxy + d),
-        (minx - d, maxy + d),
-    ]
+    a0 = _polygon_signed_area(hard_ccw_quad)
+    q = list(hard_ccw_quad) if a0 > 0 else list(reversed(hard_ccw_quad))
+    out = _offset_polygon_miter(q, [inset, inset, inset, inset])
+    for x, y in out:
+        if not (math.isfinite(x) and math.isfinite(y)):
+            return []
+    if _polygon_signed_area(out) < 0:
+        out = list(reversed(out))
+    return out
 
 
 def _translate_poly(pts, dx, dy):
@@ -1978,7 +1974,7 @@ def generate_panel_dxf(spec, outdir):
         face_h = max(tl[1], tr[1]) - min(bl[1], br[1])
         pts = _blank_outline_rt(spec, bw, bh, sides, bd, ba2, notch_size, gap, lay)
         msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
-        ff = _finished_face_outline_from_cut(pts)
+        ff = _finished_face_outline_from_hard_perimeter(lay["outer"])
         if ff:
             msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
         bend1 = _bend1_rt_dict(spec, lay, sides, ba2)
@@ -2010,7 +2006,7 @@ def generate_panel_dxf(spec, outdir):
     face_h = fy1 - fy0
     pts = _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap)
     msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
-    ff = _finished_face_outline_from_cut(pts)
+    ff = _finished_face_outline_from_hard_perimeter(_orthogonal_blank_hard_corners(bw, bh))
     if ff:
         msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
 

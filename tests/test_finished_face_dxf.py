@@ -57,6 +57,7 @@ class FinishedFaceDxfTests(unittest.TestCase):
             ff = _lwpolys_on_layer(path, "finished_face")
             self.assertEqual(len(cut), 1)
             self.assertEqual(len(ff), 1)
+            self.assertEqual(len(ff[0]), 4, "finished face is a four-sided hard-perimeter loop")
             d = SHOP_FINISHED_FACE_INSET
             mx0, my0, mx1, my1 = _bbox(cut[0])
             fx0, fy0, fx1, fy1 = _bbox(ff[0])
@@ -94,7 +95,7 @@ class FinishedFaceDxfTests(unittest.TestCase):
             self.assertIn("finished_face", doc.layers)
             ff = _lwpolys_on_layer(path, "finished_face")
             self.assertEqual(len(ff), 1)
-            self.assertGreaterEqual(len(ff[0]), 3)
+            self.assertEqual(len(ff[0]), 4)
         finally:
             os.unlink(os.path.join(td, "UNIT_FF_RT4S.dxf"))
             os.rmdir(td)
