@@ -1,4 +1,4 @@
-"""DXF `finished_face` layer: shop finished-face rectangle (not bend CL, not cut poly offset)."""
+"""DXF `finished_face` matches CSV face size; corner relief squares on cut."""
 import os
 import tempfile
 import unittest
@@ -8,11 +8,10 @@ import ezdxf
 from screenwall_generator import (
     PanelSpec,
     SHOP_FINISHED_FACE_INSET,
-    _ff_span_from_blank_edge,
-    _finished_face_rect_xy,
     flat_size,
     generate_panel_dxf,
     resolve_sides,
+    _nominal_finished_face_rect_xy,
 )
 
 
@@ -36,11 +35,11 @@ def _bbox(pts):
 
 
 class FinishedFaceDxfTests(unittest.TestCase):
-    def test_l4s_finished_face_layer_matches_ff_span(self):
+    def test_l4s_finished_face_matches_csv_dimensions(self):
         s = PanelSpec(
             panel_id="UNIT_FF_L4S",
-            face_width=24,
-            face_height=30,
+            face_width=47.75,
+            face_height=80.875,
             thickness=0.1875,
             flange_code="L4S",
             flange_type="L",
@@ -51,40 +50,44 @@ class FinishedFaceDxfTests(unittest.TestCase):
             pattern="straight",
             fastening_pair="tb",
         )
-        sides = resolve_sides(s)
-        bw, bh = flat_size(s)
-        ffx0, ffy0, ffx1, ffy1 = _finished_face_rect_xy(bw, bh, sides)
-        span_b = _ff_span_from_blank_edge(sides["bottom"])
-        span_l = _ff_span_from_blank_edge(sides["left"])
         td = tempfile.mkdtemp()
         try:
             generate_panel_dxf(s, td)
             path = os.path.join(td, "UNIT_FF_L4S.dxf")
-            doc = ezdxf.readfile(path)
-            self.assertIn("finished_face", doc.layers)
-            cut = _lwpolys_on_layer(path, "cut")
+            self.assertIn("finished_face", ezdxf.readfile(path).layers)
             ff = _lwpolys_on_layer(path, "finished_face")
-            self.assertEqual(len(cut), 1)
             self.assertEqual(len(ff), 1)
             self.assertEqual(len(ff[0]), 4)
-            bx0, by0, bx1, by1 = _bbox(ff[0])
-            self.assertAlmostEqual(bx0, ffx0, places=5)
-            self.assertAlmostEqual(by0, ffy0, places=5)
-            self.assertAlmostEqual(bx1, ffx1, places=5)
-            self.assertAlmostEqual(by1, ffy1, places=5)
-            self.assertAlmostEqual(by0, span_b, places=5)
-            self.assertAlmostEqual(bx0, span_l, places=5)
-            # Finished face lies strictly inside the blank envelope when flanges exist
-            mx0, my0, mx1, my1 = _bbox(cut[0])
-            self.assertGreater(bx0, mx0 + 1e-6)
-            self.assertGreater(by0, my0 + 1e-6)
-            self.assertLess(bx1, mx1 - 1e-6)
-            self.assertLess(by1, my1 - 1e-6)
-            # Inset toward face from developed run (f1+f2)
-            self.assertGreater(sides["bottom"].f1, by0 + SHOP_FINISHED_FACE_INSET - 1e-6)
+            x0, y0, x1, y1 = _bbox(ff[0])
+            self.assertAlmostEqual(x1 - x0, s.face_width, places=4)
+            self.assertAlmostEqual(y1 - y0, s.face_height, places=4)
+            cut_polys = _lwpolys_on_layer(path, "cut")
+            n_sq = sum(1 for p in cut_polys if len(p) == 4 and abs(_bbox(p)[2] - _bbox(p)[0] - SHOP_FINISHED_FACE_INSET) < 1e-6)
+            self.assertGreaterEqual(n_sq, 4)
         finally:
             os.unlink(os.path.join(td, "UNIT_FF_L4S.dxf"))
             os.rmdir(td)
+
+    def test_nominal_finished_face_matches_csv_dimensions(self):
+        s = PanelSpec(
+            panel_id="x",
+            face_width=24.0,
+            face_height=30.0,
+            thickness=0.1875,
+            flange_code="L4S",
+            flange_type="L",
+            flange1_depth=2.0,
+            flange2_depth=None,
+            hole_dia=0.75,
+            pitch=1.25,
+            pattern="straight",
+            fastening_pair="none",
+        )
+        sides = resolve_sides(s)
+        bw, bh = flat_size(s)
+        ffx0, ffy0, ffx1, ffy1 = _nominal_finished_face_rect_xy(bw, bh, sides)
+        self.assertAlmostEqual(ffx1 - ffx0, s.face_width, places=6)
+        self.assertAlmostEqual(ffy1 - ffy0, s.face_height, places=6)
 
     def test_rt4s_finished_face_present(self):
         s = PanelSpec(
@@ -108,8 +111,7 @@ class FinishedFaceDxfTests(unittest.TestCase):
         try:
             generate_panel_dxf(s, td)
             path = os.path.join(td, "UNIT_FF_RT4S.dxf")
-            doc = ezdxf.readfile(path)
-            self.assertIn("finished_face", doc.layers)
+            self.assertIn("finished_face", ezdxf.readfile(path).layers)
             ff = _lwpolys_on_layer(path, "finished_face")
             self.assertEqual(len(ff), 1)
             self.assertEqual(len(ff[0]), 4)

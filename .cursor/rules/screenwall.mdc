@@ -194,18 +194,18 @@ Where:
 
   Layer       Color  Content
   ----------  -----  ----------------------------------------------------------
-  cut         1      Blank outline (variable vertex count; bend relief embedded)
+  cut         1      Blank outline + four 0.195″ face-corner relief squares (closed)
   holes       2      Perforation circles
   fastening   5      Install slots
+  bend        3      Bend 1 / Bend 2 centerlines for **J** sides only
   text        6      Panel ID stick-font linework (no DXF TEXT entities)
-  finished_face 8   Finished-face construction loop (ortho rectangle or RT trapezoid)
+  finished_face 8   Nominal face: CSV width×height (ortho rect or RT trapezoid at f1+f2 runouts)
 
-No bend_extent layer (removed). Bend 1 / Bend 2 centerlines are **not** written to
-the DXF; `_bend1_cl_positions` is used only inside `_blank_outline` corner relief math.
+No bend_extent layer (removed). `_bend1_cl_positions` is used inside `_blank_outline`
+corner relief and for J-only bend CL on `bend`.
 
-Finished-face loop: on each active side, distance from outer blank cut to the FF
-line = `(f1+f2)_developed − SHOP_FINISHED_FACE_INSET` (0.195″ toward the face).
-Holes, install slots, and panel ID use this FF rectangle as the face datum.
+Finished-face loop: ortho `(el, eb)` to `(bw−er, bh−et)` with `el = (f1+f2)_developed` per side;
+RT corners shift HC outward by BD toward blank on active legs. Holes/slots use this datum.
 
 
 ================================================================================
@@ -282,12 +282,11 @@ Single letters L and J are normalized to L4S and J4S.
   _side_extra(sd)       f1+f2 per side — used for blank extension calculation
   flat_size(spec)       Returns (blank_w, blank_h)
 
-  _ff_span_from_blank_edge(sd)
-    Distance from outer blank cut on one side to the finished-face line:
-    max(0, (f1+f2)_developed − SHOP_FINISHED_FACE_INSET); inactive side → 0
+  _nominal_finished_face_rect_xy(bw, bh, sides)
+    Returns (ffx0, ffy0, ffx1, ffy1) — CSV face_width × face_height at f1+f2 runouts
 
-  _finished_face_rect_xy(bw, bh, sides)
-    Returns (ffx0, ffy0, ffx1, ffy1) for ortho panels — hole/slot/FF layer datum
+  _rt_nominal_face_corners(bl, br, tr, tl, sides, bd)
+    RT nominal face quad (HC shifted by BD toward blank on active flange legs)
 
   _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap=0.0)
     Returns CCW polygon point list (variable length by flange config + relief)

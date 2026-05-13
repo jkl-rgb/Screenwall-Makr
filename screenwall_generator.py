@@ -56,17 +56,14 @@ BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
 # ---------------------------------------------------------------------------
 # Shop flat artwork (finished face + perimeter inset) vs bend-line theory
 #
-# Shop datum: theoretical finished face. Perimeter cut is INSET 0.195" from
-# that face (cut = face − 0.195″ along the inset normal). Flat flange is
-# measured OUTWARD from the finished face.
+# Shop datum: CSV `face_width` × `face_height` = nominal finished face at developed
+# f1+f2 runouts (before BD corner arc). HC for blank outline is inset ±BD from that.
+# DXF `finished_face` is that nominal loop; perimeter `cut` is the detailed blank.
+# `SHOP_FINISHED_FACE_INSET` (0.195″) = **face-corner relief squares** on `cut`
+# (into perforation from each nominal face corner) and shop cut↔face wording in docs.
 #
-# DXF `finished_face` layer: closed loop on the **true** finished-face
-# construction lines — ortho: inset SHOP_FINISHED_FACE_INSET **toward the face**
-# from each outer blank edge along developed flange run (f1+f2); RT: same
-# inset applied inward from the HC trapezoid toward the face. Perimeter cut
-# stays on the detailed blank outline; bend CL lines are not drawn as DXF
-# reference (bend math still used only inside `_blank_outline` corner relief).
-#
+# Bend 1 / Bend 2 **centerlines** are drawn on `bend` only where a side is **J**
+# (shop bend reference). L sides have no bend CL in the DXF.
 # Calibration coupon: 5052, 0.1875″, tight punch / shop practice; reference
 # bend model for the *anchor* theory term uses r=0.0625″, k=0.32 (K32) at
 # ref_t so that other alloys/gauges inherit deltas from MATERIAL_TABLE r,k,t.
@@ -80,7 +77,7 @@ BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
 # so at the anchor (rr,kr,tr) the shop numbers are recovered; other materials
 # shift with the same relative change in bend theory.
 # ---------------------------------------------------------------------------
-SHOP_FINISHED_FACE_INSET = 0.195  # perimeter cut inset from finished face (inches)
+SHOP_FINISHED_FACE_INSET = 0.195  # face-corner relief square (inches); shop cut↔face datum in docs
 
 SHOP_FLAT_CALIBRATION_REF = {
     "ref_r": 0.0625,
@@ -648,48 +645,32 @@ def _polygon_signed_area(pts):
     return s * 0.5
 
 
-def _ff_span_from_blank_edge(sd) -> float:
-    """Developed flange run (f1+f2) minus finished-face inset toward the face.
-
-    Inactive side: outer blank cut is the face boundary on that edge (span 0)."""
-    if not sd.active:
-        return 0.0
-    return max(sd.f1 + sd.f2 - SHOP_FINISHED_FACE_INSET, 0.0)
-
-
-def _finished_face_rect_xy(bw: float, bh: float, sides) -> tuple[float, float, float, float]:
-    """Axis-aligned finished-face opening (ffx0, ffy0, ffx1, ffy1), y up from blank origin."""
-    eb = _ff_span_from_blank_edge(sides["bottom"])
-    et = _ff_span_from_blank_edge(sides["top"])
-    el = _ff_span_from_blank_edge(sides["left"])
-    er = _ff_span_from_blank_edge(sides["right"])
+def _nominal_finished_face_rect_xy(bw: float, bh: float, sides) -> tuple[float, float, float, float]:
+    """CSV `face_width` × `face_height`: aperture at f1+f2 runouts (before BD corner arc)."""
+    el = _side_extra(sides["left"])
+    er = _side_extra(sides["right"])
+    eb = _side_extra(sides["bottom"])
+    et = _side_extra(sides["top"])
     return el, eb, bw - er, bh - et
 
 
 def _finished_face_quad_ccw_ortho(bw: float, bh: float, sides):
-    """Four CCW corners of the ortho finished-face rectangle."""
-    ffx0, ffy0, ffx1, ffy1 = _finished_face_rect_xy(bw, bh, sides)
+    """Four CCW corners of the nominal finished face (matches CSV width/height)."""
+    ffx0, ffy0, ffx1, ffy1 = _nominal_finished_face_rect_xy(bw, bh, sides)
     return [(ffx0, ffy0), (ffx1, ffy0), (ffx1, ffy1), (ffx0, ffy1)]
 
 
-def _pair_ff_corners_to_hc(hc4, ff4):
-    """Order FF corners to correspond to HC order (bl, br, tr, tl)."""
-    ff = list(ff4)
-    out = []
-    for hc in hc4:
-        j = min(range(len(ff)), key=lambda k: _v2_len(_v2_sub(hc, ff[k])))
-        out.append(ff.pop(j))
-    return out
-
-
-def _rt_finished_face_quad(bl, br, tr, tl):
-    """Finished-face trapezoid: inset HC quad toward face by SHOP_FINISHED_FACE_INSET."""
-    hard = [bl, br, tr, tl]
-    a0 = _polygon_signed_area(hard)
-    q = list(hard) if a0 > 0 else list(reversed(hard))
-    d = SHOP_FINISHED_FACE_INSET
-    raw = _offset_polygon_miter(q, [-d, -d, -d, -d])
-    return _pair_ff_corners_to_hc(hard, raw)
+def _rt_nominal_face_corners(bl, br, tr, tl, sides, bd: float):
+    """RT nominal face corners: shift each HC toward blank outer by BD on active flange legs."""
+    dxl = bd if sides["left"].active else 0.0
+    dxr = bd if sides["right"].active else 0.0
+    dyb = bd if sides["bottom"].active else 0.0
+    dyt = bd if sides["top"].active else 0.0
+    nbl = (bl[0] - dxl, bl[1] - dyb)
+    nbr = (br[0] + dxr, br[1] - dyb)
+    ntr = (tr[0] + dxr, tr[1] + dyt)
+    ntl = (tl[0] - dxl, tl[1] + dyt)
+    return nbl, nbr, ntr, ntl
 
 
 def _ff_edge_rt_dict(spec, lay, sides, ffc):
@@ -1513,6 +1494,100 @@ def _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
     return pos
 
 
+def _draw_bend_lines_j_only(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
+    """Bend 1 / Bend 2 centerlines on `bend` layer for **J** flanges only (shop reference)."""
+    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
+    sd = sides
+    if sd["bottom"].active and sd["bottom"].ftype == "J":
+        _add_line(msp, fx0, bend1["bottom"], fx1, bend1["bottom"], "bend")
+    if sd["top"].active and sd["top"].ftype == "J":
+        _add_line(msp, fx0, bend1["top"], fx1, bend1["top"], "bend")
+    if sd["left"].active and sd["left"].ftype == "J":
+        _add_line(msp, bend1["left"], fy0, bend1["left"], fy1, "bend")
+    if sd["right"].active and sd["right"].ftype == "J":
+        _add_line(msp, bend1["right"], fy0, bend1["right"], fy1, "bend")
+    if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
+        _add_line(msp, fx0, sd["bottom"].f2, fx1, sd["bottom"].f2, "bend")
+    if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
+        _add_line(msp, fx0, blank_h - sd["top"].f2, fx1, blank_h - sd["top"].f2, "bend")
+    if sd["left"].active and sd["left"].ftype == "J" and sd["left"].f2 > 0:
+        _add_line(msp, sd["left"].f2, fy0, sd["left"].f2, fy1, "bend")
+    if sd["right"].active and sd["right"].ftype == "J" and sd["right"].f2 > 0:
+        _add_line(msp, blank_w - sd["right"].f2, fy0, blank_w - sd["right"].f2, fy1, "bend")
+
+
+def _draw_bend_lines_rt_j_only(msp, spec, lay, sides, ba2, blank_w, blank_h):
+    """RT bend CL lines for J sides only (axis-aligned legs + slanted top/bottom where J)."""
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    fx0, fy0 = bl[0], bl[1]
+    fx1 = br[0]
+    centroid = _rt_face_centroid(bl, br, tr, tl)
+    sd = sides
+    if spec.rt_opposing_edge == "top":
+        if sd["bottom"].active and sd["bottom"].ftype == "J":
+            _add_line(msp, fx0, fy0 - ba2, fx1, fy0 - ba2, "bend")
+        if sd["top"].active and sd["top"].ftype == "J":
+            n_top_in = _inward_normal_edge(tl, tr, centroid)
+            p0 = _v2_add(tl, _v2_scale(n_top_in, ba2))
+            p1 = _v2_add(tr, _v2_scale(n_top_in, ba2))
+            _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
+        if sd["left"].active and sd["left"].ftype == "J":
+            _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
+        if sd["right"].active and sd["right"].ftype == "J":
+            _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
+        if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
+            _add_line(msp, fx0, sd["bottom"].f2, fx1, sd["bottom"].f2, "bend")
+        if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
+            o = lay["outer"]
+            tl_o, tr_o = o[3], o[2]
+            n = _v2_norm(_perp_outward_ccw(tl_o, tr_o))
+            if _v2_dot(n, _v2_sub(centroid, _v2_scale(_v2_add(tl_o, tr_o), 0.5))) > 0:
+                n = _v2_neg(n)
+            q0 = _v2_add(tl_o, _v2_scale(n, -sd["top"].f2))
+            q1 = _v2_add(tr_o, _v2_scale(n, -sd["top"].f2))
+            _add_line(msp, q0[0], q0[1], q1[0], q1[1], "bend")
+    else:
+        n_bot_in = _inward_normal_edge(bl, br, centroid)
+        p0 = _v2_add(bl, _v2_scale(n_bot_in, ba2))
+        p1 = _v2_add(br, _v2_scale(n_bot_in, ba2))
+        if sd["bottom"].active and sd["bottom"].ftype == "J":
+            _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
+        if sd["top"].active and sd["top"].ftype == "J":
+            _add_line(msp, fx0, tr[1] + ba2, fx1, tr[1] + ba2, "bend")
+        if sd["left"].active and sd["left"].ftype == "J":
+            _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
+        if sd["right"].active and sd["right"].ftype == "J":
+            _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
+        if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
+            o = lay["outer"]
+            bl_o, br_o = o[0], o[1]
+            n = _v2_norm(_perp_outward_ccw(bl_o, br_o))
+            if _v2_dot(n, _v2_sub(centroid, _v2_scale(_v2_add(bl_o, br_o), 0.5))) > 0:
+                n = _v2_neg(n)
+            q0 = _v2_add(bl_o, _v2_scale(n, -sd["bottom"].f2))
+            q1 = _v2_add(br_o, _v2_scale(n, -sd["bottom"].f2))
+            _add_line(msp, q0[0], q0[1], q1[0], q1[1], "bend")
+        if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
+            _add_line(msp, fx0, blank_h - sd["top"].f2, fx1, blank_h - sd["top"].f2, "bend")
+    if sd["left"].active and sd["left"].ftype == "J" and sd["left"].f2 > 0:
+        _add_line(msp, sd["left"].f2, min(bl[1], tl[1]), sd["left"].f2, max(bl[1], tl[1]), "bend")
+    if sd["right"].active and sd["right"].ftype == "J" and sd["right"].f2 > 0:
+        _add_line(msp, blank_w - sd["right"].f2, min(br[1], tr[1]), blank_w - sd["right"].f2, max(br[1], tr[1]), "bend")
+
+
+def _draw_face_corner_relief_squares_ortho(msp, fx0: float, fy0: float, fx1: float, fy1: float):
+    """0.195\" closed squares on `cut`: one corner anchored at each face HC (into perforation)."""
+    s = SHOP_FINISHED_FACE_INSET
+    squares = (
+        [(fx0, fy0), (fx0 + s, fy0), (fx0 + s, fy0 + s), (fx0, fy0 + s)],
+        [(fx1, fy0), (fx1 - s, fy0), (fx1 - s, fy0 + s), (fx1, fy0 + s)],
+        [(fx1, fy1), (fx1 - s, fy1), (fx1 - s, fy1 - s), (fx1, fy1 - s)],
+        [(fx0, fy1), (fx0 + s, fy1), (fx0 + s, fy1 - s), (fx0, fy1 - s)],
+    )
+    for sq in squares:
+        msp.add_lwpolyline(sq, close=True, dxfattribs={"layer": "cut"})
+
+
 # ---------------------------------------------------------------------------
 # Fastening slots
 # ---------------------------------------------------------------------------
@@ -1886,6 +1961,7 @@ def generate_panel_dxf(spec, outdir):
         ("cut", 1),
         ("holes", 2),
         ("fastening", 5),
+        ("bend", 3),
         ("text", 6),
         ("finished_face", 8),
     ]:
@@ -1904,10 +1980,11 @@ def generate_panel_dxf(spec, outdir):
         face_h = max(tl[1], tr[1]) - min(bl[1], br[1])
         pts = _blank_outline_rt(spec, bw, bh, sides, bd, ba2, notch_size, gap, lay)
         msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
-        ffc = _rt_finished_face_quad(bl, br, tr, tl)
+        ffc = list(_rt_nominal_face_corners(bl, br, tr, tl, sides, bd))
         msp.add_lwpolyline(ffc, close=True, dxfattribs={"layer": "finished_face"})
         ff_dict = _ff_edge_rt_dict(spec, lay, sides, ffc)
         _draw_corner_reliefs(msp, fx0, fy0, fx1, fy0 + face_h, bw, bh, sides, r, t, ba2)
+        _draw_bend_lines_rt_j_only(msp, spec, lay, sides, ba2, bw, bh)
         face_holes = _hole_centers_rt(
             fx0, fx1, ffc[0], ffc[1], ffc[2], ffc[3],
             spec.hole_dia, spec.pitch, spec.pattern,
@@ -1925,24 +2002,19 @@ def generate_panel_dxf(spec, outdir):
         return
 
     bw, bh = flat_size(spec)
-    el = _side_extra(sides["left"])
-    er = _side_extra(sides["right"])
-    eb = _side_extra(sides["bottom"])
-    et = _side_extra(sides["top"])
-    fx0 = el + bd
-    fy0 = eb + bd
-    fx1 = bw - er - bd
-    fy1 = bh - et - bd
-    ffx0, ffy0, ffx1, ffy1 = _finished_face_rect_xy(bw, bh, sides)
+    ffx0, ffy0, ffx1, ffy1 = _nominal_finished_face_rect_xy(bw, bh, sides)
     face_w = ffx1 - ffx0
     face_h = ffy1 - ffy0
     ff_edge = {"left": ffx0, "bottom": ffy0, "right": ffx1, "top": ffy1}
+    hcx0, hcy0, hcx1, hcy1 = ffx0 + bd, ffy0 + bd, ffx1 - bd, ffy1 - bd
     pts = _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap)
     msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
     ff = _finished_face_quad_ccw_ortho(bw, bh, sides)
     msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
+    _draw_face_corner_relief_squares_ortho(msp, ffx0, ffy0, ffx1, ffy1)
 
-    _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, bw, bh, sides, r, t, ba2)
+    _draw_corner_reliefs(msp, hcx0, hcy0, hcx1, hcy1, bw, bh, sides, r, t, ba2)
+    _draw_bend_lines_j_only(msp, hcx0, hcy0, hcx1, hcy1, bw, bh, sides, ba2)
 
     face_holes = _hole_centers(
         ffx0, ffy0, face_w, face_h,
