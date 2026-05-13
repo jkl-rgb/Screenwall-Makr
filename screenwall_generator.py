@@ -630,6 +630,49 @@ def _poly_bbox(pts):
     return min(xs), min(ys), max(xs), max(ys)
 
 
+def _polygon_signed_area(pts):
+    """Positive for CCW vertices (y up)."""
+    s = 0.0
+    n = len(pts)
+    for i in range(n):
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        s += x0 * y1 - x1 * y0
+    return s * 0.5
+
+
+def _finished_face_outline_from_cut(pts):
+    """Perimeter cut is inset from the theoretical finished face by SHOP_FINISHED_FACE_INSET.
+    Returns a closed CCW polyline offset outward from the cut outline (shop artwork convention).
+    Falls back to a bbox rectangle if the miter offset fails validation."""
+    if not pts or len(pts) < 3:
+        return []
+    d = SHOP_FINISHED_FACE_INSET
+    n = len(pts)
+    a0 = _polygon_signed_area(pts)
+    pts_ccw = pts if a0 > 0 else list(reversed(pts))
+    a_in = abs(a0)
+    out = _offset_polygon_miter(pts_ccw, [d] * n)
+
+    def _valid(poly):
+        if len(poly) != n:
+            return False
+        for x, y in poly:
+            if not (math.isfinite(x) and math.isfinite(y)):
+                return False
+        return _polygon_signed_area(poly) > a_in + 1e-9
+
+    if _valid(out):
+        return out
+    minx, miny, maxx, maxy = _poly_bbox(pts)
+    return [
+        (minx - d, miny - d),
+        (maxx + d, miny - d),
+        (maxx + d, maxy + d),
+        (minx - d, maxy + d),
+    ]
+
+
 def _translate_poly(pts, dx, dy):
     return [(p[0] + dx, p[1] + dy) for p in pts]
 
@@ -1912,7 +1955,14 @@ def generate_panel_dxf(spec, outdir):
     doc = ezdxf.new(dxfversion="R2010")
     doc.units = 1
     msp = doc.modelspace()
-    for name, color in [("cut", 1), ("holes", 2), ("fastening", 5), ("bend", 3), ("text", 6)]:
+    for name, color in [
+        ("cut", 1),
+        ("holes", 2),
+        ("fastening", 5),
+        ("bend", 3),
+        ("text", 6),
+        ("finished_face", 8),
+    ]:
         if name not in doc.layers:
             doc.layers.add(name=name, color=color)
 
@@ -1928,6 +1978,9 @@ def generate_panel_dxf(spec, outdir):
         face_h = max(tl[1], tr[1]) - min(bl[1], br[1])
         pts = _blank_outline_rt(spec, bw, bh, sides, bd, ba2, notch_size, gap, lay)
         msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
+        ff = _finished_face_outline_from_cut(pts)
+        if ff:
+            msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
         bend1 = _bend1_rt_dict(spec, lay, sides, ba2)
         _draw_corner_reliefs(msp, fx0, fy0, fx1, fy0 + face_h, bw, bh, sides, r, t, ba2)
         _draw_bend_lines_rt(msp, spec, lay, sides, ba2, bw, bh)
@@ -1956,7 +2009,10 @@ def generate_panel_dxf(spec, outdir):
     face_w = fx1 - fx0
     face_h = fy1 - fy0
     pts = _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap)
-    msp.add_lwpolyline(pts,close=True,dxfattribs={"layer":"cut"})
+    msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
+    ff = _finished_face_outline_from_cut(pts)
+    if ff:
+        msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
 
     bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, bw, bh, sides, ba2)
     _draw_corner_reliefs(msp,fx0,fy0,fx1,fy1,bw,bh,sides,r,t,ba2)
