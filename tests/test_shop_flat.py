@@ -5,6 +5,7 @@ from screenwall_generator import (
     L_BEND_CL_OUTWARD,
     PanelSpec,
     SHOP_FINISHED_FACE_INSET,
+    SHOP_FLANGE_CORNER_INSET,
     SHOP_FLAT_CALIBRATION_REF,
     get_rules,
     resolve_sides,
@@ -59,7 +60,8 @@ class ShopFlatCalibrationTests(unittest.TestCase):
         self.assertNotAlmostEqual(f1_auto, f1_off, places=3)
 
     def test_finished_face_inset_constant(self):
-        self.assertAlmostEqual(SHOP_FINISHED_FACE_INSET, 0.195, places=3)
+        self.assertAlmostEqual(SHOP_FLANGE_CORNER_INSET, 0.195, places=3)
+        self.assertAlmostEqual(SHOP_FINISHED_FACE_INSET, SHOP_FLANGE_CORNER_INSET, places=6)
         self.assertAlmostEqual(L_BEND_CL_OUTWARD, 0.027, places=3)
         self.assertAlmostEqual(SHOP_FLAT_CALIBRATION_REF["L_flat_over_f1_od"], 1.859 / 2.0, places=6)
 

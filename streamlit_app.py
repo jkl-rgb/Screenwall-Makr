@@ -248,7 +248,7 @@ with st.expander("Flange code reference", expanded=False):
   `fastener_dia + 0.50"`.
 - Accepted length aliases on import: `fastener_slot_length`, `install_slot_length`.
 - `shop_flat_mode`: `auto` (default) blends shop cut-line flats (5052 / 0.1875″ calibration) with bend theory across all table materials; `off` uses pure `_flat_leg_L` / `_flat_leg_J` / `_flat_lip` only.
-- DXF layer `finished_face` (gray): **CSV `width` × `height`** = nominal face opening at developed `f1+f2` runouts (before BD corner arc). Holes / slots / margin use this. Layer `bend`: bend 1 and bend 2 centerlines for **L and J** (L bend 1 uses 0.195″ + BA/2 from the face plus 0.027″ toward the outer perimeter; J bend 1 stays BA/2 from HC). Exclude `finished_face` from perimeter cut in CAM.
+- DXF layer `finished_face` (gray): **CSV `width` × `height`** = nominal face opening at developed `f1+f2` runouts (before BD corner arc). Holes / slots / margin use this. Layer `bend`: bend 1 and bend 2 centerlines for **L and J** (L bend 1 is BA/2 + 0.027″ from the nominal face toward the outer perimeter; inside-corner flange ends for f1/f2 are inset 0.195″ from each face corner toward the interior; J bend 1 stays BA/2 from HC). Exclude `finished_face` from perimeter cut in CAM.
 - For `MIX`: set `top_type` / `bottom_type` / `left_type` / `right_type` to `L` or `J`.
   Set `*_f1` (leg depth) and `*_f2` (return lip, J only). A side with `*_f1 = 0` is a straight cut.
 - For `RT4S` / `RT4J`: set `rt_opposing_edge` to `top` or `bottom` (which parallel edge is straight in plan).
