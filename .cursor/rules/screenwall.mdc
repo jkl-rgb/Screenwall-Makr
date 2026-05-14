@@ -5,9 +5,10 @@ Full Engineering Reference for screenwall_generator.py
 Repo:     jkl-rgb/Screenwall-Makr (GitHub)
 App:      share.streamlit.io (main file: streamlit_app.py)
 Machine:  Artform Wall Machine / Ermaksan Speed Bend Pro
-Updated: 2026-05-12 — shop DXF: L bend-1 from nominal face (0.195″+BA/2+0.027″), J bend-1
-  HC±BA/2; cut outline notch_size=0 (no 2×T / no face-corner squares); bend layer L+J;
-  Streamlit Cloud from GitHub main; GENERATOR_ARTWORK_TAG in UI caption.
+Updated: 2026-05-13 — `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI) from nominal face;
+  `bend` ortho HC quad still nominal face + BD; L bend-1 from `_f1_bend_inset_from_face` + BA/2;
+  J bend-1 HC ± BA/2; RT uses CI in layout + outline; notch_size=0 on cut; GENERATOR_ARTWORK_TAG
+  in UI (shop-f1inset168-L1665-J1497-1582). Primary geometry iterative; next: fastening / face holes.
 
 
 ================================================================================
@@ -84,10 +85,12 @@ Blank size:
   blank_w = face_width  + 2 × ex = 24 + 7.174 = 31.174"  [Fusion: 31.174" ✓]
   blank_h = face_height + 2 × ex = 36 + 7.174 = 43.174"  [Fusion: 43.174" ✓]
 
-Hard corner placement:
-  HC_offset = ex + BD = 3.587 + 0.331 = 3.918" from blank edge
-  HC-HC_w = 31.174 - 2×3.918 = 23.338"  [Fusion: 23.36" ✓]
-  HC-HC_h = 43.174 - 2×3.918 = 35.338"  [Fusion: 35.367" ✓]
+Hard corner / void inner corner — two datums:
+  Bend theory (Fusion §3 anchor): distance from blank edge to bend-deduction inner corner
+    = ex + BD (blank sizing / HC-HC checks vs Fusion still use this model).
+  Shop DXF `cut` (ortho/RT): void inner corners at nominal face inner corner + CI along
+    active axes (CI = SHOP_FLANGE_CORNER_INSET ≈0.195″ ref), not +BD — perimeter face→
+    inside-leg matches shop coupon. `bend` layer ortho: HC quad at nominal face + BD.
 
 Layout from blank edge inward:
   [blank edge]--f2=2.084"--[bend2 CL]--1.669"--[bend1 CL]--BA/2=0.147"--[HC]--face
@@ -100,8 +103,9 @@ Bend line positions (blank sizing / Fusion J reference):
 
 L flange (single 90°, same material row as above):
   f1_flat (blank sizing) = nominal_f1 - OSS + BA   (= nominal_f1 - BD/2 + BA/2)
-  DXF bend 1 CL on `bend`: from nominal **face** edge, SHOP_FINISHED_FACE_INSET +
-  BA/2 + L_BEND_CL_OUTWARD toward blank (see `_bend1_cl_positions`; J uses HC ± BA/2).
+  DXF bend 1 CL on `bend`: J = BA/2 from HC toward blank (HC from nominal face + BD ortho);
+    L = `_f1_bend_inset_from_face` + BA/2 from nominal face toward blank (shop F1 inset ref
+    + material blend — not the same inches as CI on `cut`).
 
 PHYSICAL DESCRIPTION:
   Bend 1 = leg fold, tight to face (small BA/2 offset)
@@ -138,13 +142,13 @@ EDGE COUNTS BY FLANGE CODE:
   (DXF cut outline uses notch_size=0 — vertex count tracks void+miter without the
    former 2×T corner notch vertices.)
 
-KEY GEOMETRY RULES:
+KEY GEOMETRY RULES (`cut` layer; CI = SHOP_FLANGE_CORNER_INSET):
   J side at J+J corner:
-    void_edge_length = f1 + BD
+    void_edge_length = f1 + CI
     This ensures the miter starts exactly at the bend2 centerline.
 
   Any side without a miter at that corner:
-    void_edge_length = f1 + f2 + BD
+    void_edge_length = f1 + f2 + CI
     The path runs straight to the blank edge (square end).
 
   Miter only exists at J+J corners.
@@ -180,10 +184,10 @@ J4S REFERENCE OUTLINE (20 points, CCW, blank coords with 0,0 at BL blank corner)
   19: (0,       fy1-ml)    TL miter end = left primary start
   20: (0,       fy0+ml)    left primary end
 
-Where:
-  fx0 = el+BD,   fy0 = eb+BD    (BL hard corner)
-  fx1 = bw-er-BD, fy1 = bh-et-BD (TR hard corner)
-  vb/vt/vl/vr = f1+BD per side  (void edge lengths)
+Where (ortho `cut`):
+  fx0 = el+CI,   fy0 = eb+CI    (BL void inner hard corner)
+  fx1 = bw-er-CI, fy1 = bh-et-CI (TR void inner hard corner)
+  vb/vt/vl/vr = f1+CI per side  (void edge lengths)
   mb/mt/ml/mr = f2 per side     (miter depths, 0 for L flanges)
   el/er/eb/et = f1+f2 per side  (blank extensions)
 
@@ -205,7 +209,8 @@ No bend_extent layer (removed). `_bend1_cl_positions` is used inside `_blank_out
 corner routing and for bend CL on `bend` (L vs J offsets differ).
 
 Finished-face loop: ortho `(el, eb)` to `(bw−er, bh−et)` with `el = (f1+f2)_developed` per side;
-RT corners shift HC outward by BD toward blank on active legs. Holes/slots use this datum.
+RT nominal face from `_rt_nominal_face_corners(..., SHOP_FLANGE_CORNER_INSET)` (HC toward blank
+on active legs by CI). Holes/slots use this datum. `bend` ortho HC quad: nominal face + BD.
 
 
 ================================================================================
@@ -285,8 +290,9 @@ Single letters L and J are normalized to L4S and J4S.
   _nominal_finished_face_rect_xy(bw, bh, sides)
     Returns (ffx0, ffy0, ffx1, ffy1) — CSV face_width × face_height at f1+f2 runouts
 
-  _rt_nominal_face_corners(bl, br, tr, tl, sides, bd)
-    RT nominal face quad (HC shifted by BD toward blank on active flange legs)
+  _rt_nominal_face_corners(bl, br, tr, tl, sides, hc_to_face_pad)
+    RT nominal face quad (HC shifted toward blank by hc_to_face_pad on active legs;
+    generate_panel_dxf passes SHOP_FLANGE_CORNER_INSET)
 
   _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap=0.0)
     Returns CCW polygon point list (variable length by flange config + relief)

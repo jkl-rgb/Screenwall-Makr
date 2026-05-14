@@ -3,10 +3,14 @@ SCREENWALL MAKR — MASTER KNOWN TRUTHS REFERENCE
 Architectural Cassette Fabrication / Flat Pattern DXF Generator
 Machine: Artform Wall Machine / Ermaksan Speed Bend Pro
 ================================================================================
-Last compiled: 2026-05-12 (DXF shop artwork pass) — L bend-1 CL from nominal face
-  (SHOP_FINISHED_FACE_INSET + BA/2 + L_BEND_CL_OUTWARD toward blank); J bend-1 CL
-  HC ± BA/2; generate_panel_dxf passes notch_size=0 (no 2×T corner notch, no face-corner
-  squares on cut); bend layer = L+J bend1, J bend2. Prior Fusion blank/f2 checks unchanged.
+Last compiled: 2026-05-13 — Perimeter `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI ≈0.195″
+  ref) from nominal face inner corner, not BD (bend layer still uses BD from face for ortho
+  HC quad). L bend-1 CL from `_f1_bend_inset_from_face` + BA/2 (shop F1 inset ref 0.168″
+  at calibration r,k,t, blended elsewhere). J bend-1 CL HC ± BA/2. RT: `_rt_blank_layout`
+  and `_rt_nominal_face_corners` use CI for cut/finished_face consistency. notch_size=0 on
+  cut (no 2×T corner notch, no J+J five-point square on cut). Primary geometry still
+  iterative; next focus: fastening / face holes. Fusion blank/f2 checks in §3 unchanged
+  as bend-theory anchor; cut HC spacing intentionally differs where CI ≠ BD.
 Code repo: jkl-rgb/Screenwall-Makr
 
 
@@ -126,9 +130,16 @@ Verified against Fusion 360 factory flat pattern drawing.
   blank_w = 24 + 2×3.587 = 31.174"                              [Fusion: 31.174" ✓]
   blank_h = 36 + 2×3.587 = 43.174"                              [Fusion: 43.174" ✓]
 
-  Hard corner offset = ex + BD = 3.587 + 0.3315 = 3.918" from blank edge
+  Bend-theory inner corner offset from blank edge (Fusion flat / bend deduction) =
+    ex + BD = 3.587 + 0.3315 = 3.918"
   HC-HC width  = 31.174 - 2×3.918 = 23.338"                     [Fusion: 23.36" ✓]
   HC-HC height = 43.174 - 2×3.918 = 35.338"                     [Fusion: 35.367" ✓]
+
+  SHOP DXF `cut` LAYER (current code, ortho): void inner corners use ex + CI from blank
+    edge (CI = SHOP_FLANGE_CORNER_INSET, same inches as legacy SHOP_FINISHED_FACE_INSET),
+    not ex+BD, so face-corner→inside-flange-leg on the perimeter ≈ CI. `bend` layer HC
+    quad for bend CLs remains nominal face + BD (ortho). RT uses CI in `_rt_blank_layout`
+    and void runouts in `_blank_outline_rt`.
 
   LAYOUT FROM BLANK EDGE INWARD:
   [blank edge] --2.084"-- [bend2 CL] --1.669"-- [bend1 CL] --0.147"-- [HARD CORNER] --face--
@@ -157,7 +168,9 @@ SECTION 4 — FLAT PATTERN COORDINATE SYSTEM
 DXF ORIGIN CONVENTION (our code):
   (0, 0) = bottom-left corner of BLANK
   Y increases upward
-  Hard corners (void inner corners) at (el+BD, eb+BD) where el/eb = f1+f2 per side
+  Perimeter `cut` void inner corners (ortho): (el+CI, eb+CI) etc., CI = SHOP_FLANGE_CORNER_INSET,
+    el/eb = f1+f2 per side. `bend` layer resolves bend CLs from nominal face using BD where
+    applicable (see generate_panel_dxf).
 
 KNOWN TRUTHS REFERENCE CONVENTION:
   (0, 0) = bottom-left corner of FACE (web corner)
@@ -201,13 +214,13 @@ EDGE COUNTS BY FLANGE CODE:
     abstract edge-count model than when relief notches were embedded. J4S miter/void
     dimensions (Fusion) for blank layout are unchanged.
 
-VOID EDGE LENGTH RULE:
+VOID EDGE LENGTH RULE (perimeter `cut`; CI = SHOP_FLANGE_CORNER_INSET):
   J side at J+J corner:
-    void_edge_length = f1 + BD
+    void_edge_length = f1 + CI
     This ensures the miter starts exactly at the bend2 centerline.
 
   Any side without a miter at that corner:
-    void_edge_length = f1 + f2 + BD
+    void_edge_length = f1 + f2 + CI
     The path runs straight to the blank edge (square end).
 
 J4S 20-POINT OUTLINE (blank coords, CCW):
@@ -232,10 +245,10 @@ J4S 20-POINT OUTLINE (blank coords, CCW):
   19: (0,       fy1-ml)    TL miter end → left primary start
   20: (0,       fy0+ml)    left primary end
 
-Where:
-  fx0 = el+BD, fy0 = eb+BD   (BL hard corner)
-  fx1 = bw-er-BD, fy1 = bh-et-BD   (TR hard corner)
-  vb/vt/vl/vr = f1+BD (void edge lengths per side)
+Where (ortho `cut` layer):
+  fx0 = el+CI, fy0 = eb+CI   (BL void inner hard corner)
+  fx1 = bw-er-CI, fy1 = bh-et-CI   (TR void inner hard corner)
+  vb/vt/vl/vr = f1+CI (void edge lengths per side in the abstract model)
   mb/mt/ml/mr = f2 (miter depths per side, 0 for L flanges)
 
 MITER GEOMETRY:
@@ -463,13 +476,19 @@ CONFIRMED MATCHES (no action needed):
   ✓ Abstract J4S outline = 20 segments — verified; DXF cut omits old corner-notch
     vertices when notch_size=0 (vertex count closer to abstract model than before)
   ✓ BA formula — matches Fusion formula exactly
-  ✓ L f1_flat in code = F1 - OSS + BA (§8); J bend-1 on DXF `bend` = HC ± BA/2;
-    L bend-1 on DXF `bend` = nominal face + SHOP_FINISHED_FACE_INSET + BA/2 +
-    L_BEND_CL_OUTWARD toward blank (see screenwall_generator.py)
+  ✓ L f1_flat in code = F1 - OSS + BA (§8); J bend-1 on DXF `bend` = HC ± BA/2
+    (HC quad from nominal face + BD ortho); L bend-1 on DXF `bend` =
+    `_f1_bend_inset_from_face` + BA/2 from nominal face toward blank (shop ref
+    SHOP_F1_BEND_INSET_REF at calibration r,k,t, blended for other materials; see
+    `_bend1_cl_positions` with face_corner_pad=bd from `_draw_bend_lines`).
+  ✓ Perimeter `cut` void inner corners: ortho/RT use SHOP_FLANGE_CORNER_INSET (CI)
+    from nominal face inner corner for void HC and void runouts, not BD.
   ✓ Panel ID on text layer clears install slots when ID side has fastening
 
-MINOR DIFFERENCES (within tolerance, no action needed):
-  ~ HC-HC: code=23.338" vs Fusion=23.36" (0.022" diff = rounding)
+MINOR DIFFERENCES / INTENTIONAL DIVERGENCES:
+  ~ Fusion HC-HC (bend theory, §3) vs DXF `cut` inner HC spacing: `cut` uses CI from
+    face for void corners, so HC-HC on the cut outline is wider than the Fusion bend-
+    deduction row by 2×(BD−CI) when CI < BD (by design for shop perimeter).
   ~ bend2 CL from HC: code=1.834" vs shop=1.815-1.823" (0.011-0.019" = rounding)
   ~ miter vertex X: code=1.834" vs shop=1.815" (0.019" = rounding)
   ~ miter angle stays exactly 45° only when gap_override = 0;
@@ -499,7 +518,9 @@ CURRENT CODE STATUS:
        + half slot length + small gap); else mid-flange.
 
   6. L flat leg f1_flat = F1 - OSS + BA in code (matches §8 L_total); DXF bend-1
-     CL differs by flange type (J: HC ± BA/2; L: face datum + shop constants).
+     CL differs by flange type (J: HC ± BA/2 from face+BD quad; L: `_f1_bend_inset_from_face`
+     + BA/2). `cut` void HC uses CI from nominal face, not BD. Primary shop geometry
+     is still iterative (not every panel/alloy verified).
 
   7. Origin convention difference (documentation only)
      Known Truths: 0,0 at face corner
@@ -510,6 +531,9 @@ REMAINING ENGINEERING GAPS:
   1. Nesting remains unimplemented (stub functions only)
   2. Install slot sizing now supports explicit slot_length in CSV; if left blank
      the default remains fastener_dia + 0.50"
+  3. Fastening / face perforation holes — next area to harden (margins, grid vs
+     finished_face, RT, interaction with slots)
+  4. End-to-end validation: shop primary geometry not fully closed across all configs
 
 CONFLICTS (requires resolution):
   None confirmed. All apparent formula conflicts resolve to different reference
@@ -531,10 +555,13 @@ SECTION 11 — DXF LAYER DEFINITIONS
   text        | 6     | Panel ID stick-font (no DXF TEXT entities)
 
   No bend_extent layer — removed.
-  Bend 1 on `bend`: J = BA/2 from HC toward blank; L = 0.195″ + BA/2 + 0.027″ from
-  nominal face edge toward blank (constants in code).
+  `cut` void inner corners: ortho/RT use SHOP_FLANGE_CORNER_INSET (CI) from nominal
+    face inner corner; void runouts use f1+CI / f1+f2+CI as in §5.
+  Bend 1 on `bend`: J = BA/2 from HC toward blank (HC quad = nominal face + BD ortho);
+    L = `_f1_bend_inset_from_face` + BA/2 from nominal face (shop F1 inset ref + blend).
   Bend 2: f2 inward from blank edge (J flanges only).
-  Streamlit caption shows GENERATOR_ARTWORK_TAG to confirm deploy matches GitHub main.
+  Streamlit caption shows GENERATOR_ARTWORK_TAG (e.g. shop-f1inset168-L1665-J1497-1582)
+    to confirm deploy matches GitHub main.
 
 
 ================================================================================

@@ -59,7 +59,9 @@ BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
 # Shop flat artwork (finished face + perimeter inset) vs bend-line theory
 #
 # Shop datum: CSV `face_width` × `face_height` = nominal finished face at developed
-# f1+f2 runouts (before BD corner arc). HC for blank outline is inset ±BD from that.
+# f1+f2 runouts (before BD corner arc). Perimeter `cut` void inner corners use
+# SHOP_FLANGE_CORNER_INSET from that inner corner; `bend` still uses BD from nominal
+# face where required (see generate_panel_dxf, _bend1_cl_positions face_corner_pad).
 # DXF `finished_face` is that nominal loop; perimeter `cut` is the detailed blank.
 # `SHOP_FLANGE_CORNER_INSET` (0.195″) = distance from nominal finished **face corner**
 # to the **inside leg edge** of the flanges at that corner (perimeter cut datum); not
