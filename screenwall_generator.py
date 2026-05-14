@@ -917,9 +917,10 @@ def flat_size(spec):
 #   At any non-J+J corner (J+L, L+J, J+inactive) the J flange terminates
 #   square at the corner — geometrically identical to an L flange there.
 #
-# Per-corner edge counts under this rule:
+# Per-corner edge counts under this rule (abstract model; DXF passes notch_size=0,
+# so the cut polyline does not add the former 2×T / five-point square detours):
 #   J+J corner: 4 edges (void, miter, miter, void)
-#   L+L / J+L / L+J corner: 2 edges (square notch)
+#   L+L / J+L / L+J corner: 2 edges (void segments to HC, no embedded relief square)
 #   active+inactive corner: 1 edge (square flange end)
 #   inactive+inactive: 0 edges (point only)
 #

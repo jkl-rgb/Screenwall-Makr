@@ -10,6 +10,11 @@ files and optionally specify stock sheet dimensions for nesting.  It
 wraps the core functions from ``screenwall_generator.py`` so that
 non‑programmers can run the generator without using the command line.
 
+DXF output always follows the ``screenwall_generator.py`` that Python imports
+(sibling file or first match on ``PYTHONPATH``). The Streamlit **web** app builds
+from **GitHub** only; see ``DEPLOY_STREAMLIT.md`` — local edits do not change the
+cloud app until you commit and push.
+
 Key features:
 
 * CSV file selection:  Users can browse their filesystem to choose

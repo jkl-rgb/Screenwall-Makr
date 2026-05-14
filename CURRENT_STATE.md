@@ -1,42 +1,53 @@
 # Screenwall Makr — Current State
 
-**Last updated:** 2026-05-13  
-**Repo HEAD (reference):** `28b4619` on `main` — stable baseline for **L/J joinery**, **L flange development**, and **panel ID vs install slots**.
+**Last updated:** 2026-05-12  
+**Repo HEAD (reference):** `749f39c` on `main` — shop DXF artwork: **L** bend-1 CL from nominal face (+ constants below), **no** 2×T perimeter corner notch on `cut`, **no** face-corner squares, **`bend`** layer for **L and J**.
 
-This file is the short handoff for future work. If it conflicts with older prose in `KnownTruths` or `.cursor/rules/screenwall.mdc`, **prefer this file and the code** until those docs are re-read after the next big change.
-
----
-
-## What is verified in this baseline
-
-- **J4S** — Blank size, HC placement, bend1/bend2 CLs, J+J miters, and Fusion cross-checks in `KnownTruths` §3 still match.
-- **L4S / MIX (L sides)** — Flat leg uses **§8** development; bend-1 CL uses the **same HC − BA/2 rule as J**; non–J+J corner joinery uses the **bend-relief square** on the **intersection of bend-1 centerlines**, quadrant toward HC **plus bridge to hard corner** (no BD-wide stair gap).
-- **Panel ID** — Stick-font linework on layer `text`; when the chosen ID flange **also has install slots**, anchor is **`max(4″ from flange start, past first slot)`** (see constants in `screenwall_generator.py`), else **mid-flange**.
+This file is the short handoff for future work. If it conflicts with older prose in `KnownTruths` or `.cursor/rules/screenwall.mdc`, **prefer this file and the code** until those docs are reconciled.
 
 ---
 
-## Bend & blank math (code)
+## What is verified / locked in code
+
+- **J4S** — Blank size, HC placement, `f2` / bend2 CL from blank edge, J+J miters, and Fusion cross-checks in `KnownTruths` §1–§3 for **blank geometry** still match.
+- **L4S / MIX (L sides)** — Leg flat for blank sizing uses **§8**: `f1 = nominal − OSS + BA` (equivalently `nominal − BD/2 + BA/2`).
+- **DXF `finished_face`** — CSV `width` × `height` = nominal opening at developed **f1+f2** runouts (`_nominal_finished_face_rect_xy` ortho; `_rt_nominal_face_corners` for RT). Holes, slots, and margins use that datum.
+- **DXF `bend` layer** — Bend **1** for **every active** L or J side; bend **2** only for **J** with `f2 > 0`.  
+  - **J** bend-1 CL: **HC ± BA/2** (same as Fusion bend zone from hard corner).  
+  - **L** bend-1 CL: from nominal **face** edge, **0.195″** inward into the void + **BA/2**, plus **0.027″** further toward the outer perimeter (`SHOP_FINISHED_FACE_INSET`, `L_BEND_CL_OUTWARD`). See `_bend1_cl_positions`, `_draw_bend_lines`, `_draw_bend_lines_rt`.
+- **DXF `cut` layer** — Single closed blank outline. `generate_panel_dxf` passes **`notch_size = 0`** into `_blank_outline` / `_blank_outline_rt`, so **no** former **2×T** relief at bend-1 intersections and **no** J+J five-point square detour on the cut polyline. **No** four **0.195″** closed squares at face corners on `cut`.
+- **Panel ID** — Stick-font on `text`; when the ID flange **also has install slots**, anchor uses **`max(4″ from flange start, past first slot)`** (`PANEL_ID_CLEAR_FROM_FLANGE_END`, `PANEL_ID_CLEAR_PAST_SLOT`), else **mid-flange**.
+
+---
+
+## Bend & blank math (blank sizing vs DXF bend lines)
 
 | Item | J | L |
 |------|---|---|
-| Leg flat `f1` (blank sizing) | `nominal − 3×BD/2` | **`nominal − OSS + BA`** (= `nominal − BD/2 + BA/2`) |
+| Leg flat `f1` (blank sizing) | `nominal − 3×BD/2` | **`nominal − OSS + BA`** |
 | Lip flat `f2` | `nominal − BD/2` | — |
-| Bend 1 CL | **`HC − BA/2`** toward blank (same for L and J) | same |
-| Bend 2 CL | `f2` from blank edge (J only) | — |
+| **Bend 1 CL (`bend` layer)** | **HC ± BA/2** | **From nominal face:** 0.195″ + BA/2 + 0.027″ toward blank (see code) |
+| Bend 2 CL (`bend` layer) | `f2` from blank edge | — |
 
 - `OSS = R + T`, `BA = (π/2)(R + K×T)`, `BD = 2×OSS − BA`, `BA/2 = (π/4)(R + K×T)`.
-- **HC–HC** on flat remains **`face_width − 2×BD`** (and same for height) — that matches the documented Fusion convention for **W, H = finished face O.D.**
+- **HC** = inner hard corners of the void at `el+bd`, `eb+bd`, etc. Nominal **face** rect is offset **bd** from HC toward the aperture on active sides (ortho); RT uses the shifted nominal quad from `_rt_nominal_face_corners`.
 
 ---
 
-## Corner joinery (perimeter)
+## Corner joinery (perimeter `cut` only)
 
-- **`notch_size`** in outline = **`2×T`** (e.g. **0.375″** for **0.1875″** stock), centered on **bend-1 CL intersection** at each active corner.
-- **J+J** — Miter + existing **five-point** relief path around that square (shop/Fusion path).
-- **Non–J+J** (L+L, J+L, L+J) — **Two edges** of the square in the quadrant toward HC, then a **short segment** along the inner face line to HC so the outline meets the hard corner flush.
-- **`gap_override`** — Still only affects **J+J** miter apex (void endpoints pulled by `gap/2` along void edges when `gap > 0`).
+- **`notch_size`** in `generate_panel_dxf` is **`0.0`**; outline logic only builds `notch_path` when **`notch_size > 1e-9`**.
+- **J+J** — Miter + void edges unchanged at the **geometry** level; the **cut path** no longer walks the old five-point square relief when `notch_size` is zero.
+- **Non–J+J** — Void segments meet **HC** without the former quadrant + bridge notch jog on `cut`.
+- **`gap_override`** — Only affects **J+J** when `gap > 0` (void endpoints pulled by `gap/2` along void edges).
+- **`_draw_corner_reliefs`** — Still a **no-op**. Optional OSS face notch / back J circle in `KnownTruths` §6 remain **reference / future**, not separate DXF entities today.
 
-`_draw_corner_reliefs` is currently a **no-op**; reliefs are carried only on the **main cut outline**, not as separate overlapping rectangles.
+---
+
+## Streamlit (web)
+
+- **Streamlit Community Cloud** runs whatever is on **GitHub** (`main`, `streamlit_app.py`). Local edits do not appear on the web until **commit + push**.
+- The CSV template caption includes **`GENERATOR_ARTWORK_TAG`** (e.g. `shop-bend-face195-L027-no2Tnotch`). If that string is missing or stale, redeploy or use **Reboot app** on [share.streamlit.io](https://share.streamlit.io/).
 
 ---
 
@@ -45,16 +56,6 @@ This file is the short handoff for future work. If it conflicts with older prose
 - **Layer:** `fastening`; slot width = `fastener_dia`; length = `slot_length` or **`fastener_dia + 0.50"`**.
 - **L slots:** `_l_positions` — **2″** end margin, ~**12″** o.c., max **13″** spacing.
 - **J slots:** Align to perforation rows/columns; normal position from bend geometry + `BD`.
-
-**Panel ID:** `PANEL_ID_CLEAR_FROM_FLANGE_END = 4.0`″, `PANEL_ID_CLEAR_PAST_SLOT = 0.125`″ — avoids sitting on the first slot when that side is in `fastening_pair`.
-
----
-
-## CSV / Streamlit
-
-- Template may still include **example rows** — delete before production batch upload.
-- Delimiters, UTF-8/UTF-16, slot column aliases unchanged.
-- After deploy changes: **Reboot app** in Streamlit; confirm UI build marker if you use one.
 
 ---
 
