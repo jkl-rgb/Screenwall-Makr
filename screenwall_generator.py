@@ -691,12 +691,15 @@ def _finished_face_quad_ccw_ortho(bw: float, bh: float, sides):
     return [(ffx0, ffy0), (ffx1, ffy0), (ffx1, ffy1), (ffx0, ffy1)]
 
 
-def _rt_nominal_face_corners(bl, br, tr, tl, sides, bd: float):
-    """RT nominal face corners: shift each HC toward blank outer by BD on active flange legs."""
-    dxl = bd if sides["left"].active else 0.0
-    dxr = bd if sides["right"].active else 0.0
-    dyb = bd if sides["bottom"].active else 0.0
-    dyt = bd if sides["top"].active else 0.0
+def _rt_nominal_face_corners(bl, br, tr, tl, sides, hc_to_face_pad: float):
+    """RT nominal face corners: shift each HC toward blank outer by ``hc_to_face_pad`` on active legs.
+
+    For shop DXF this matches ``SHOP_FLANGE_CORNER_INSET`` (cut void HC → aperture corner). Bend
+    deduction ``bd`` is handled separately on the ``bend`` layer."""
+    dxl = hc_to_face_pad if sides["left"].active else 0.0
+    dxr = hc_to_face_pad if sides["right"].active else 0.0
+    dyb = hc_to_face_pad if sides["bottom"].active else 0.0
+    dyt = hc_to_face_pad if sides["top"].active else 0.0
     nbl = (bl[0] - dxl, bl[1] - dyb)
     nbr = (br[0] + dxr, br[1] - dyb)
     ntr = (tr[0] + dxr, tr[1] + dyt)
@@ -787,12 +790,13 @@ def _rt_blank_layout(spec: PanelSpec, sides, bd: float):
     eb = _side_extra(sides["bottom"])
     et = _side_extra(sides["top"])
     W = spec.face_width
+    ci = SHOP_FLANGE_CORNER_INSET
     bw = W + el + er + 2.0 * bd
-    fx0 = el + bd
-    fx1 = bw - er - bd
-    eb_bd = eb + bd
+    fx0 = el + ci
+    fx1 = bw - er - ci
+    eb_bd = eb + ci
     bl, br, tr, tl = _rt_hc_corners_raw(spec, fx0, fx1, eb_bd)
-    dists = [eb + bd, er + bd, et + bd, el + bd]
+    dists = [eb + ci, er + ci, et + ci, el + ci]
     outer = _offset_polygon_miter([bl, br, tr, tl], dists)
     minx, miny, maxx, maxy = _poly_bbox(outer)
     dx, dy = -minx, -miny
@@ -955,10 +959,12 @@ def flat_size(spec):
 #   J4S = 20,  L4S = 12,  J2TB = J2LR = 8,  L2TB = L2LR = 8,
 #   MIX J-tb / L-lr = 12  (was 16 before the J+L miter was removed).
 #
-# Hard corner (void inner) at ex+BD from blank edge where ex = f1+f2.
-# Void edge length per corner:
-#   J side at J+J corner : f1+BD   (miter then takes the lip portion to blank)
-#   any side without miter : f1+f2+BD = el+BD  (path runs straight to blank)
+# Perimeter void inner corner is inset SHOP_FLANGE_CORNER_INSET (0.195″) from each
+# nominal finished-face inner corner — not BD (~0.31″), which inflated the face-to–
+# inner-leg dimension. Bend deduction BD is still used for `bend` layer HCs in
+# generate_panel_dxf. Void runouts use f1+f2+inset so fv1 = el+inset = fx0, etc.
+#   J side at J+J corner : f1+inset, f2   (miter then takes the lip portion to blank)
+#   any side without miter : f1+f2+inset  (path runs straight to blank)
 # ---------------------------------------------------------------------------
 
 def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, spec, rules, gap=0.0):
@@ -979,22 +985,28 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, spec, rules, ga
     el=_side_extra(sl); er=_side_extra(sr)
     eb=_side_extra(sb); et=_side_extra(st)
 
-    fx0=el+bd;    fy0=eb+bd
-    fx1=bw-er-bd; fy1=bh-et-bd
-    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd, spec, rules)
+    ci = SHOP_FLANGE_CORNER_INSET
+    fx0 = el + ci
+    fy0 = eb + ci
+    fx1 = bw - er - ci
+    fy1 = bh - et - ci
+    bend1 = _bend1_cl_positions(
+        fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd, spec, rules,
+        face_corner_pad=ci,
+    )
 
     def _corner_params(this_sd, other_sd):
         """Effective (void_edge_length, miter_depth) for THIS side at the corner
         it shares with OTHER. Miter is only present when both sides are J;
-        otherwise the void edge spans the full f1+f2+BD so it reaches the
+        otherwise the void edge spans the full f1+f2+inset so it reaches the
         blank edge straight (square end)."""
         if not this_sd.active:
             return (0.0, 0.0)
         is_jj = (this_sd.ftype == "J"
                  and other_sd.active and other_sd.ftype == "J")
         if is_jj:
-            return (this_sd.f1 + bd, this_sd.f2)
-        return (this_sd.f1 + this_sd.f2 + bd, 0.0)
+            return (this_sd.f1 + ci, this_sd.f2)
+        return (this_sd.f1 + this_sd.f2 + ci, 0.0)
 
     # (void_edge, miter_depth) per side per corner
     fh1_bl, fh2_bl = _corner_params(sb, sl);  fv1_bl, fv2_bl = _corner_params(sl, sb)
@@ -1269,14 +1281,15 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
     bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
     sl, sr, sb, st = sides["left"], sides["right"], sides["bottom"], sides["top"]
     centroid = _rt_face_centroid(bl, br, tr, tl)
+    ci = SHOP_FLANGE_CORNER_INSET
 
     def _corner_params(this_sd, other_sd):
         if not this_sd.active:
             return (0.0, 0.0)
         is_jj = this_sd.ftype == "J" and other_sd.active and other_sd.ftype == "J"
         if is_jj:
-            return (this_sd.f1 + bd, this_sd.f2)
-        return (this_sd.f1 + this_sd.f2 + bd, 0.0)
+            return (this_sd.f1 + ci, this_sd.f2)
+        return (this_sd.f1 + this_sd.f2 + ci, 0.0)
 
     fh1_bl, fh2_bl = _corner_params(sb, sl)
     fv1_bl, fv2_bl = _corner_params(sl, sb)
@@ -1504,17 +1517,22 @@ def _hole_centers(face_x, face_y, face_w, face_h,
     return centers
 
 
-def _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd, spec, rules):
-    """Bend-1 centerline for each active side (HC quad fx0..fy1).
+def _bend1_cl_positions(
+    fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd, spec, rules, *, face_corner_pad: float
+):
+    """Bend-1 centerline for each active side.
+
+    ``(fx0..fy1)`` is the void inner-corner quad: ``face_corner_pad`` is the axis inset
+    from nominal finished face to that quad (``SHOP_FLANGE_CORNER_INSET`` on ``cut``,
+    ``bd`` when resolving from bend HCs in ``generate_panel_dxf``).
 
     L and J: F1 bend-1 CL is **inset** `_f1_bend_inset_from_face` from the nominal
-    finished-face edge — toward panel interior (e.g. top: ffy1 − ins; right: ffx1 − ins),
-    not toward the blank outer. Bend-2 CL for J remains at blank edge − developed f2.
+    finished-face edge toward panel interior. Bend-2 CL for J remains at blank edge − developed f2.
     """
-    ffy0 = fy0 - bd
-    ffy1 = fy1 + bd
-    ffx0 = fx0 - bd
-    ffx1 = fx1 + bd
+    ffy0 = fy0 - face_corner_pad
+    ffy1 = fy1 + face_corner_pad
+    ffx0 = fx0 - face_corner_pad
+    ffx1 = fx1 + face_corner_pad
     ins = _f1_bend_inset_from_face(spec, rules)
     pos = {}
     for name, sd in sides.items():
@@ -1533,7 +1551,9 @@ def _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd, sp
 
 def _draw_bend_lines(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd, spec, rules):
     """Bend 1 / Bend 2 centerlines on `bend` for L and J (bend 2 only for J with f2 > 0)."""
-    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd, spec, rules)
+    bend1 = _bend1_cl_positions(
+        fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd, spec, rules, face_corner_pad=bd
+    )
     sd = sides
     if sd["bottom"].active:
         _add_line(msp, fx0, bend1["bottom"], fx1, bend1["bottom"], "bend")
@@ -2020,7 +2040,7 @@ def generate_panel_dxf(spec, outdir):
         face_h = max(tl[1], tr[1]) - min(bl[1], br[1])
         pts = _blank_outline_rt(spec, bw, bh, sides, bd, ba2, notch_size, gap, lay)
         msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
-        ffc = list(_rt_nominal_face_corners(bl, br, tr, tl, sides, bd))
+        ffc = list(_rt_nominal_face_corners(bl, br, tr, tl, sides, SHOP_FLANGE_CORNER_INSET))
         msp.add_lwpolyline(ffc, close=True, dxfattribs={"layer": "finished_face"})
         ff_dict = _ff_edge_rt_dict(spec, lay, sides, ffc)
         _draw_corner_reliefs(msp, fx0, fy0, fx1, fy0 + face_h, bw, bh, sides, r, t, ba2)
