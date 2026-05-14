@@ -194,15 +194,15 @@ Where:
 
   Layer       Color  Content
   ----------  -----  ----------------------------------------------------------
-  cut         1      Blank outline + four 0.195″ face-corner relief squares (closed)
+  cut         1      Blank outline (no 2×T corner relief notch; no face-corner squares)
   holes       2      Perforation circles
   fastening   5      Install slots
-  bend        3      Bend 1 / Bend 2 centerlines for **J** sides only
+  bend        3      Bend 1 / Bend 2 centerlines for **L and J** (bend 2 J only)
   text        6      Panel ID stick-font linework (no DXF TEXT entities)
   finished_face 8   Nominal face: CSV width×height (ortho rect or RT trapezoid at f1+f2 runouts)
 
 No bend_extent layer (removed). `_bend1_cl_positions` is used inside `_blank_outline`
-corner relief and for J-only bend CL on `bend`.
+corner routing and for bend CL on `bend` (L vs J offsets differ).
 
 Finished-face loop: ortho `(el, eb)` to `(bw−er, bh−et)` with `el = (f1+f2)_developed` per side;
 RT corners shift HC outward by BD toward blank on active legs. Holes/slots use this datum.
@@ -290,8 +290,8 @@ Single letters L and J are normalized to L4S and J4S.
 
   _blank_outline(bw, bh, sides, bd, ba2, notch_size, gap=0.0)
     Returns CCW polygon point list (variable length by flange config + relief)
-    notch_size: typically 2×T; gap: J+J miter apex only (gap_override / default)
-    Uses `_bend1_cl_positions` only for relief geometry inside this polygon
+    notch_size: DXF generator passes 0 (no 2×T corner notch); gap: J+J miter apex only
+    Uses `_bend1_cl_positions` for corner routing inside this polygon
 
   _hole_centers(face_x, face_y, face_w, face_h, hole_dia, pitch, pattern,
                 stagger_angle, margin)

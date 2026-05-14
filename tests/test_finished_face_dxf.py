@@ -1,4 +1,4 @@
-"""DXF `finished_face` matches CSV face size; corner relief squares on cut."""
+"""DXF `finished_face` matches CSV face size; bend CLs on `bend` for L and J."""
 import os
 import tempfile
 import unittest
@@ -7,12 +7,23 @@ import ezdxf
 
 from screenwall_generator import (
     PanelSpec,
-    SHOP_FINISHED_FACE_INSET,
     flat_size,
     generate_panel_dxf,
     resolve_sides,
     _nominal_finished_face_rect_xy,
 )
+
+
+def _lines_on_layer(path: str, layer: str) -> int:
+    doc = ezdxf.readfile(path)
+    msp = doc.modelspace()
+    n = 0
+    for e in msp:
+        if e.dxf.layer != layer:
+            continue
+        if e.dxftype() == "LINE":
+            n += 1
+    return n
 
 
 def _lwpolys_on_layer(path: str, layer: str) -> list[list[tuple[float, float]]]:
@@ -61,9 +72,7 @@ class FinishedFaceDxfTests(unittest.TestCase):
             x0, y0, x1, y1 = _bbox(ff[0])
             self.assertAlmostEqual(x1 - x0, s.face_width, places=4)
             self.assertAlmostEqual(y1 - y0, s.face_height, places=4)
-            cut_polys = _lwpolys_on_layer(path, "cut")
-            n_sq = sum(1 for p in cut_polys if len(p) == 4 and abs(_bbox(p)[2] - _bbox(p)[0] - SHOP_FINISHED_FACE_INSET) < 1e-6)
-            self.assertGreaterEqual(n_sq, 4)
+            self.assertGreaterEqual(_lines_on_layer(path, "bend"), 4)
         finally:
             os.unlink(os.path.join(td, "UNIT_FF_L4S.dxf"))
             os.rmdir(td)
@@ -115,6 +124,7 @@ class FinishedFaceDxfTests(unittest.TestCase):
             ff = _lwpolys_on_layer(path, "finished_face")
             self.assertEqual(len(ff), 1)
             self.assertEqual(len(ff[0]), 4)
+            self.assertGreaterEqual(_lines_on_layer(path, "bend"), 4)
         finally:
             os.unlink(os.path.join(td, "UNIT_FF_RT4S.dxf"))
             os.rmdir(td)

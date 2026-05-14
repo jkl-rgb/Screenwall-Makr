@@ -2,6 +2,7 @@
 import unittest
 
 from screenwall_generator import (
+    L_BEND_CL_OUTWARD,
     PanelSpec,
     SHOP_FINISHED_FACE_INSET,
     SHOP_FLAT_CALIBRATION_REF,
@@ -59,6 +60,7 @@ class ShopFlatCalibrationTests(unittest.TestCase):
 
     def test_finished_face_inset_constant(self):
         self.assertAlmostEqual(SHOP_FINISHED_FACE_INSET, 0.195, places=3)
+        self.assertAlmostEqual(L_BEND_CL_OUTWARD, 0.027, places=3)
         self.assertAlmostEqual(SHOP_FLAT_CALIBRATION_REF["L_flat_over_f1_od"], 1.859 / 2.0, places=6)
 
 

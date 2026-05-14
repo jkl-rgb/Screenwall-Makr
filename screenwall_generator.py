@@ -13,7 +13,7 @@ import ezdxf
 #   f2  = nominal_f2 - BD/2   = 2.084" (blank edge to bend2 CL) ✓
 #   Hard corner at ex+BD = 3.918" from blank edge
 #   HC-HC = 31.174-2*3.918 = 23.338" ≈ Fusion 23.36" ✓
-#   bend1 CL from HC = BA/2 = 0.147" ✓
+#   bend1 CL from HC = BA/2 for J; L uses face + 0.195″ + BA/2 + 0.027″ (shop DXF) ✓
 #   bend2 CL from HC = 3.918-2.084 = 1.834" ≈ Fusion 1.823" ✓
 #   All diffs <0.015" = accumulated rounding, within fab tolerance
 # ---------------------------------------------------------------------------
@@ -59,11 +59,11 @@ BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
 # Shop datum: CSV `face_width` × `face_height` = nominal finished face at developed
 # f1+f2 runouts (before BD corner arc). HC for blank outline is inset ±BD from that.
 # DXF `finished_face` is that nominal loop; perimeter `cut` is the detailed blank.
-# `SHOP_FINISHED_FACE_INSET` (0.195″) = **face-corner relief squares** on `cut`
-# (into perforation from each nominal face corner) and shop cut↔face wording in docs.
-#
-# Bend 1 / Bend 2 **centerlines** are drawn on `bend` only where a side is **J**
-# (shop bend reference). L sides have no bend CL in the DXF.
+# `SHOP_FINISHED_FACE_INSET` (0.195″) = shop datum from nominal **face** edge: L
+# bend-1 CL is measured from the face corner into the void by 0.195″ + BA/2, plus
+# `L_BEND_CL_OUTWARD` (0.027″) further toward the outer perimeter. J bend-1 CL
+# stays BA/2 from the hard corner (HC). Bend 1 / bend 2 CLs are on `bend` for
+# both L and J (bend 2 only where J and f2 > 0).
 # Calibration coupon: 5052, 0.1875″, tight punch / shop practice; reference
 # bend model for the *anchor* theory term uses r=0.0625″, k=0.32 (K32) at
 # ref_t so that other alloys/gauges inherit deltas from MATERIAL_TABLE r,k,t.
@@ -77,7 +77,10 @@ BEND_RADIUS_FACTOR = 1.0  # r = t fallback (not 2/3*t)
 # so at the anchor (rr,kr,tr) the shop numbers are recovered; other materials
 # shift with the same relative change in bend theory.
 # ---------------------------------------------------------------------------
-SHOP_FINISHED_FACE_INSET = 0.195  # face-corner relief square (inches); shop cut↔face datum in docs
+SHOP_FINISHED_FACE_INSET = 0.195  # inches from nominal face toward void for L bend-1 datum
+L_BEND_CL_OUTWARD = 0.027  # L-only: extra offset of bend-1 CL toward outer perimeter (inches)
+# Shown in Streamlit so you can confirm the running app loaded this tree (not an older copy).
+GENERATOR_ARTWORK_TAG = "shop-bend-face195-L027-no2Tnotch"
 
 SHOP_FLAT_CALIBRATION_REF = {
     "ref_r": 0.0625,
@@ -950,7 +953,7 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
 
     fx0=el+bd;    fy0=eb+bd
     fx1=bw-er-bd; fy1=bh-et-bd
-    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
+    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd)
 
     def _corner_params(this_sd, other_sd):
         """Effective (void_edge_length, miter_depth) for THIS side at the corner
@@ -995,7 +998,7 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, gap=0.0):
             h_void = (h_void[0],           h_void[1] + oy*half)
 
         notch_path = None
-        if hsd.active and vsd.active:
+        if hsd.active and vsd.active and notch_size > 1e-9:
             half = notch_size / 2.0
             x0, x1 = b1v - half, b1v + half
             y0, y1 = b1h - half, b1h + half
@@ -1185,7 +1188,7 @@ def _rt_corner_core(
             v_void = _v2_add(v_void, _v2_scale(_v2_norm(dv), halfg))
 
     notch_path = None
-    if hsd.active and vsd.active:
+    if hsd.active and vsd.active and notch_size > 1e-9:
         half = notch_size / 2.0
         if hsd.ftype == "J" and vsd.ftype == "J":
             if jj_ox is not None and jj_oy is not None:
@@ -1473,39 +1476,45 @@ def _hole_centers(face_x, face_y, face_w, face_h,
     return centers
 
 
-def _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
-    """Bend-1 centerline position for each active side.
+def _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd):
+    """Bend-1 centerline position for each active side (HC quad fx0..fy1).
 
-    Fusion / Known Truths: bend1 CL is always BA/2 from the hard corner on that
-    edge (same for L and J). Flat leg *length* for blank sizing still differs
-    (_flat_leg_L vs _flat_leg_J); only the CL offset from HC is unified here.
+    J: bend1 CL is BA/2 from the hard corner (Fusion / §8).
+    L: shop artwork — 0.195″ in from nominal *face* corner, then BA/2, plus
+    L_BEND_CL_OUTWARD toward the outer perimeter.
     """
+    ffy0 = fy0 - bd
+    ffy1 = fy1 + bd
+    ffx0 = fx0 - bd
+    ffx1 = fx1 + bd
+    s_shop = SHOP_FINISHED_FACE_INSET
+    lo = L_BEND_CL_OUTWARD
     pos = {}
     for name, sd in sides.items():
         if not sd.active:
             continue
         if name == "bottom":
-            pos[name] = fy0 - ba2
+            pos[name] = (fy0 - ba2) if sd.ftype == "J" else (ffy0 - s_shop - ba2 - lo)
         elif name == "top":
-            pos[name] = fy1 + ba2
+            pos[name] = (fy1 + ba2) if sd.ftype == "J" else (ffy1 + s_shop + ba2 + lo)
         elif name == "left":
-            pos[name] = fx0 - ba2
+            pos[name] = (fx0 - ba2) if sd.ftype == "J" else (ffx0 - s_shop - ba2 - lo)
         elif name == "right":
-            pos[name] = fx1 + ba2
+            pos[name] = (fx1 + ba2) if sd.ftype == "J" else (ffx1 + s_shop + ba2 + lo)
     return pos
 
 
-def _draw_bend_lines_j_only(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2):
-    """Bend 1 / Bend 2 centerlines on `bend` layer for **J** flanges only (shop reference)."""
-    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2)
+def _draw_bend_lines(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd):
+    """Bend 1 / Bend 2 centerlines on `bend` for L and J (bend 2 only for J with f2 > 0)."""
+    bend1 = _bend1_cl_positions(fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba2, bd)
     sd = sides
-    if sd["bottom"].active and sd["bottom"].ftype == "J":
+    if sd["bottom"].active:
         _add_line(msp, fx0, bend1["bottom"], fx1, bend1["bottom"], "bend")
-    if sd["top"].active and sd["top"].ftype == "J":
+    if sd["top"].active:
         _add_line(msp, fx0, bend1["top"], fx1, bend1["top"], "bend")
-    if sd["left"].active and sd["left"].ftype == "J":
+    if sd["left"].active:
         _add_line(msp, bend1["left"], fy0, bend1["left"], fy1, "bend")
-    if sd["right"].active and sd["right"].ftype == "J":
+    if sd["right"].active:
         _add_line(msp, bend1["right"], fy0, bend1["right"], fy1, "bend")
     if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
         _add_line(msp, fx0, sd["bottom"].f2, fx1, sd["bottom"].f2, "bend")
@@ -1517,25 +1526,51 @@ def _draw_bend_lines_j_only(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, ba
         _add_line(msp, blank_w - sd["right"].f2, fy0, blank_w - sd["right"].f2, fy1, "bend")
 
 
-def _draw_bend_lines_rt_j_only(msp, spec, lay, sides, ba2, blank_w, blank_h):
-    """RT bend CL lines for J sides only (axis-aligned legs + slanted top/bottom where J)."""
+def _draw_bend_lines_rt(msp, spec, lay, sides, ba2, blank_w, blank_h, ffc):
+    """RT bend CL on `bend` for L and J; ffc = nominal face quad (nbl, nbr, ntr, ntl)."""
     bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
     fx0, fy0 = bl[0], bl[1]
     fx1 = br[0]
+    nbl, nbr, ntr, ntl = ffc[0], ffc[1], ffc[2], ffc[3]
     centroid = _rt_face_centroid(bl, br, tr, tl)
     sd = sides
+    s = SHOP_FINISHED_FACE_INSET
+    lo = L_BEND_CL_OUTWARD
+    dist_l = s + ba2 + lo
+
+    n_top_in = _inward_normal_edge(tl, tr, centroid)
+    n_top_out = _v2_neg(n_top_in)
+    n_bot_in = _inward_normal_edge(bl, br, centroid)
+    n_bot_out = _v2_neg(n_bot_in)
+
     if spec.rt_opposing_edge == "top":
-        if sd["bottom"].active and sd["bottom"].ftype == "J":
-            _add_line(msp, fx0, fy0 - ba2, fx1, fy0 - ba2, "bend")
-        if sd["top"].active and sd["top"].ftype == "J":
-            n_top_in = _inward_normal_edge(tl, tr, centroid)
-            p0 = _v2_add(tl, _v2_scale(n_top_in, ba2))
-            p1 = _v2_add(tr, _v2_scale(n_top_in, ba2))
-            _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
-        if sd["left"].active and sd["left"].ftype == "J":
-            _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
-        if sd["right"].active and sd["right"].ftype == "J":
-            _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
+        if sd["bottom"].active:
+            if sd["bottom"].ftype == "J":
+                _add_line(msp, fx0, fy0 - ba2, fx1, fy0 - ba2, "bend")
+            else:
+                yb = nbl[1] - s - ba2 - lo
+                _add_line(msp, fx0, yb, fx1, yb, "bend")
+        if sd["top"].active:
+            if sd["top"].ftype == "J":
+                p0 = _v2_add(tl, _v2_scale(n_top_in, ba2))
+                p1 = _v2_add(tr, _v2_scale(n_top_in, ba2))
+                _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
+            else:
+                p0 = _v2_add(ntl, _v2_scale(n_top_out, dist_l))
+                p1 = _v2_add(ntr, _v2_scale(n_top_out, dist_l))
+                _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
+        if sd["left"].active:
+            if sd["left"].ftype == "J":
+                _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
+            else:
+                xL = nbl[0] - s - ba2 - lo
+                _add_line(msp, xL, bl[1], xL, tl[1], "bend")
+        if sd["right"].active:
+            if sd["right"].ftype == "J":
+                _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
+            else:
+                xR = nbr[0] + s + ba2 + lo
+                _add_line(msp, xR, br[1], xR, tr[1], "bend")
         if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
             _add_line(msp, fx0, sd["bottom"].f2, fx1, sd["bottom"].f2, "bend")
         if sd["top"].active and sd["top"].ftype == "J" and sd["top"].f2 > 0:
@@ -1548,17 +1583,33 @@ def _draw_bend_lines_rt_j_only(msp, spec, lay, sides, ba2, blank_w, blank_h):
             q1 = _v2_add(tr_o, _v2_scale(n, -sd["top"].f2))
             _add_line(msp, q0[0], q0[1], q1[0], q1[1], "bend")
     else:
-        n_bot_in = _inward_normal_edge(bl, br, centroid)
-        p0 = _v2_add(bl, _v2_scale(n_bot_in, ba2))
-        p1 = _v2_add(br, _v2_scale(n_bot_in, ba2))
-        if sd["bottom"].active and sd["bottom"].ftype == "J":
-            _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
-        if sd["top"].active and sd["top"].ftype == "J":
-            _add_line(msp, fx0, tr[1] + ba2, fx1, tr[1] + ba2, "bend")
-        if sd["left"].active and sd["left"].ftype == "J":
-            _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
-        if sd["right"].active and sd["right"].ftype == "J":
-            _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
+        if sd["bottom"].active:
+            if sd["bottom"].ftype == "J":
+                p0 = _v2_add(bl, _v2_scale(n_bot_in, ba2))
+                p1 = _v2_add(br, _v2_scale(n_bot_in, ba2))
+                _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
+            else:
+                p0 = _v2_add(nbl, _v2_scale(n_bot_out, dist_l))
+                p1 = _v2_add(nbr, _v2_scale(n_bot_out, dist_l))
+                _add_line(msp, p0[0], p0[1], p1[0], p1[1], "bend")
+        if sd["top"].active:
+            if sd["top"].ftype == "J":
+                _add_line(msp, fx0, tr[1] + ba2, fx1, tr[1] + ba2, "bend")
+            else:
+                yt = ntr[1] + s + ba2 + lo
+                _add_line(msp, fx0, yt, fx1, yt, "bend")
+        if sd["left"].active:
+            if sd["left"].ftype == "J":
+                _add_line(msp, fx0 - ba2, bl[1], fx0 - ba2, tl[1], "bend")
+            else:
+                xL = nbl[0] - s - ba2 - lo
+                _add_line(msp, xL, bl[1], xL, tl[1], "bend")
+        if sd["right"].active:
+            if sd["right"].ftype == "J":
+                _add_line(msp, fx1 + ba2, br[1], fx1 + ba2, tr[1], "bend")
+            else:
+                xR = nbr[0] + s + ba2 + lo
+                _add_line(msp, xR, br[1], xR, tr[1], "bend")
         if sd["bottom"].active and sd["bottom"].ftype == "J" and sd["bottom"].f2 > 0:
             o = lay["outer"]
             bl_o, br_o = o[0], o[1]
@@ -1574,19 +1625,6 @@ def _draw_bend_lines_rt_j_only(msp, spec, lay, sides, ba2, blank_w, blank_h):
         _add_line(msp, sd["left"].f2, min(bl[1], tl[1]), sd["left"].f2, max(bl[1], tl[1]), "bend")
     if sd["right"].active and sd["right"].ftype == "J" and sd["right"].f2 > 0:
         _add_line(msp, blank_w - sd["right"].f2, min(br[1], tr[1]), blank_w - sd["right"].f2, max(br[1], tr[1]), "bend")
-
-
-def _draw_face_corner_relief_squares_ortho(msp, fx0: float, fy0: float, fx1: float, fy1: float):
-    """0.195\" closed squares on `cut`: one corner anchored at each face HC (into perforation)."""
-    s = SHOP_FINISHED_FACE_INSET
-    squares = (
-        [(fx0, fy0), (fx0 + s, fy0), (fx0 + s, fy0 + s), (fx0, fy0 + s)],
-        [(fx1, fy0), (fx1 - s, fy0), (fx1 - s, fy0 + s), (fx1, fy0 + s)],
-        [(fx1, fy1), (fx1 - s, fy1), (fx1 - s, fy1 - s), (fx1, fy1 - s)],
-        [(fx0, fy1), (fx0 + s, fy1), (fx0 + s, fy1 - s), (fx0, fy1 - s)],
-    )
-    for sq in squares:
-        msp.add_lwpolyline(sq, close=True, dxfattribs={"layer": "cut"})
 
 
 # ---------------------------------------------------------------------------
@@ -1930,15 +1968,8 @@ def _draw_fastening_slots_rt(msp, spec, lay, ff_dict, ffc, sides, blank_w, blank
 
 
 # ---------------------------------------------------------------------------
-# Section 6 corner reliefs
-#
-#   Square face-corner notch:
-#     - Centered on the intersection of the two bend1 centerlines
-#     - Sized to extend one material thickness from that center in both axes
-#       (total square size = 2*T), per current shop-floor preference
-#     - When the relief overlaps the perimeter corner, it is now carried by the
-#       main outline path instead of being drawn as a separate cut stub
-#     - Otherwise fall back to the closed square relief
+# Section 6 corner reliefs (optional separate geometry; perimeter joinery uses
+# `_blank_outline` / `_blank_outline_rt` with notch_size=0 for current shop DXF).
 # ---------------------------------------------------------------------------
 def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t, ba2):
     return
@@ -1969,7 +2000,8 @@ def generate_panel_dxf(spec, outdir):
         if name not in doc.layers:
             doc.layers.add(name=name, color=color)
 
-    notch_size = 2.0 * t
+    # Corner 2×T relief notches removed per shop artwork; keep param for API.
+    notch_size = 0.0
 
     if _is_right_trapezoid(spec):
         lay = _rt_blank_layout(spec, sides, bd)
@@ -1985,7 +2017,7 @@ def generate_panel_dxf(spec, outdir):
         msp.add_lwpolyline(ffc, close=True, dxfattribs={"layer": "finished_face"})
         ff_dict = _ff_edge_rt_dict(spec, lay, sides, ffc)
         _draw_corner_reliefs(msp, fx0, fy0, fx1, fy0 + face_h, bw, bh, sides, r, t, ba2)
-        _draw_bend_lines_rt_j_only(msp, spec, lay, sides, ba2, bw, bh)
+        _draw_bend_lines_rt(msp, spec, lay, sides, ba2, bw, bh, ffc)
         face_holes = _hole_centers_rt(
             fx0, fx1, ffc[0], ffc[1], ffc[2], ffc[3],
             spec.hole_dia, spec.pitch, spec.pattern,
@@ -2012,10 +2044,9 @@ def generate_panel_dxf(spec, outdir):
     msp.add_lwpolyline(pts, close=True, dxfattribs={"layer": "cut"})
     ff = _finished_face_quad_ccw_ortho(bw, bh, sides)
     msp.add_lwpolyline(ff, close=True, dxfattribs={"layer": "finished_face"})
-    _draw_face_corner_relief_squares_ortho(msp, ffx0, ffy0, ffx1, ffy1)
 
     _draw_corner_reliefs(msp, hcx0, hcy0, hcx1, hcy1, bw, bh, sides, r, t, ba2)
-    _draw_bend_lines_j_only(msp, hcx0, hcy0, hcx1, hcy1, bw, bh, sides, ba2)
+    _draw_bend_lines(msp, hcx0, hcy0, hcx1, hcy1, bw, bh, sides, ba2, bd)
 
     face_holes = _hole_centers(
         ffx0, ffy0, face_w, face_h,
