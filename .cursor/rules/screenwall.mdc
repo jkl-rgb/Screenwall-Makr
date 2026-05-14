@@ -8,8 +8,9 @@ Machine:  Artform Wall Machine / Ermaksan Speed Bend Pro
 Updated: 2026-05-14 — `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI) from nominal face;
   `bend` ortho HC quad still nominal face + BD; L bend-1 from `_f1_bend_inset_from_face` + BA/2;
   J bend-1 HC ± BA/2; RT uses CI in layout + outline; notch_size=0 on cut; GENERATOR_ARTWORK_TAG
-  in UI (shop-f1inset168-L1665-J1497-1582). Primary shop geometry is good in the current
-  model; next: fastening / face holes.
+  in UI (from `screenwall_generator.py`, updates with artwork/slot rules). J lip install slots:
+  nominal F2 − hole-to-face OC to blank outer; outer perf line only; ≤12" o.c.; J+J corner trim.
+  DXF plan: inside face up. Primary shop geometry is good in the current model; next: nesting / edge cases.
 
 
 ================================================================================
@@ -306,7 +307,8 @@ Single letters L and J are normalized to L4S and J4S.
 
   _draw_fastening_slots(msp, spec, ffx0, ffy0, ffx1, ffy1, face_w, face_h,
                         sides, blank_w, blank_h, bd)
-    Draws install slots on fastening layer (mid-flange uses finished-face edges)
+    Draws install slots on fastening layer. J lip: nominal F2 shop offset, outer perf line,
+    ≤12" o.c., J+J trim (`_j_slot_normal_ortho`, `_j_slot_stations_along_flange`). L: `_l_positions`.
 
   _draw_panel_id_text(doc, msp, spec, sides, ff_edge, face_holes, ...)
     Panel ID stick-font on text layer; clears slots when ID side has fastening
@@ -377,18 +379,39 @@ margin clearance on all sides.
 
 
 ================================================================================
-11. INSTALL SLOTS
+11. INSTALL SLOTS (`fastening` layer)
 ================================================================================
 
-J flanges: slots in lip zone; slot normal position from bend-1 / face holes + BD.
-  Slot centers align with the primary face perforation rows/columns.
+Coordinate / viewing convention:
+  Flat DXF is **inside face up** (perforated finished_face toward +Y “up” in plan as drawn).
+  Panel ID stick text is authored for that view; on an **L** flange the ID may land on the
+  leg that becomes **hidden after forming** when that leg folds outward.
+
+L flanges:
+  Slots in leg zone, centered between blank edge and bend-1 CL.
+  First and last slot are 2" from the flange ends.
+  Intermediate spacing floats as close to 12" o.c. as possible, but never exceeds 13".
   Slot orientation is parallel to the side.
 
-L flanges: slots in leg zone, centered between blank edge and bend-1 CL.
-  First and last slot are 2" from the flange ends.
-  Intermediate spacing floats as close to 12" o.c. as possible,
-  but never exceeds 13".
-  Slot orientation is parallel to the side.
+J flanges (return lip):
+  **Normal (into the face) position — shop rule:** let nominal_F2 = CSV `flange2_depth`
+  (or MIX `*_f2` for that side). Let d_face = perforation center to inner **finished_face**
+  edge, along the panel normal, for the hole row/column aligned with that slot. Then
+    (slot center to blank OUTER lip edge, OC) = nominal_F2 − d_face.
+  Implemented in `_j_slot_axis_coord_shop_ortho` / `_j_slot_normal_rt` (RT samples the
+  finished-face edge at the hole). Slot center is clamped to stay inside the **developed**
+  lip span (`SideDef.f2` minus half slot length).
+
+  **Along the flange:** slot stations are chosen only on the **outermost** perforation
+  row or column adjacent to that J (so a staggered grid does not interpolate to an inner
+  line). Spacing between consecutive slot centers is never **greater** than 12"
+  (`FASTENING_J_MAX_OC_IN`); it may be tighter when perforations require. Selection uses
+  `_j_outer_face_holes`, `_select_slots_outer_line`, `_j_slot_stations_along_flange`.
+
+  **J+J corners:** the 45° miter shortens usable outer lip before the straight run. Along-
+  flange coordinates for station picking trim from each affected blank corner by **developed**
+  `f2` (`_jj_trim_along_x_from_blank`, `_jj_trim_along_y_from_blank`) so the first/last
+  slots remain in solid material.
 
 fastening_pair values:
   tb              top + bottom only

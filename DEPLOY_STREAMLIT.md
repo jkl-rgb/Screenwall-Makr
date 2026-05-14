@@ -35,4 +35,4 @@ streamlit run streamlit_app.py
 
 - **Community Cloud always runs code from GitHub**, not from your laptop. After editing `screenwall_generator.py` or `streamlit_app.py`, **commit and push to `main`**, then wait for the automatic rebuild or open the app on [share.streamlit.io](https://share.streamlit.io/) and use **⋮ → Reboot app**.
 
-- **Sanity check:** On the app page, under “Download CSV template”, the caption includes **`DXF engine:`** and a tag such as **`shop-f1inset168-L1665-J1497-1582`**. That string is `GENERATOR_ARTWORK_TAG` in `screenwall_generator.py`. If it is missing or wrong, the deployed revision is not the one you think it is.
+- **Sanity check:** On the app page, under “Download CSV template”, the caption includes **`DXF engine:`** and **`GENERATOR_ARTWORK_TAG`** (defined in `screenwall_generator.py`; it changes when bend/slot artwork rules change). If it is missing or wrong, the deployed revision is not the one you think it is.

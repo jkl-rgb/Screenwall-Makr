@@ -10,7 +10,7 @@ This file is the short handoff for future work. If it conflicts with older prose
 ## Status
 
 - **Primary shop geometry is in good shape** in code: blank sizing, developed flats (shop auto where enabled), **`bend`** artwork, and **`cut`** perimeter (CI vs BD split, no 2×T / no face-corner squares on cut) match the current shop/Fusion-aligned model. Earlier wording that implied geometry was “not solid” was a **typo** on the author’s side.
-- **Next engineering focus (planned): fastening / perforation holes** — alignment to face, margins, patterns, and any slot vs hole interactions.
+- **Next engineering focus (optional):** nesting / sheet layout; further fastening edge cases (very coarse pitch, non-rectangular margins).
 
 ---
 
@@ -57,7 +57,7 @@ This file is the short handoff for future work. If it conflicts with older prose
 ## Streamlit (web)
 
 - **Streamlit Community Cloud** runs whatever is on **GitHub** (`main`, `streamlit_app.py`). Local edits do not appear on the web until **commit + push**.
-- The CSV template caption includes **`DXF engine:`** and **`GENERATOR_ARTWORK_TAG`** (currently **`shop-f1inset168-L1665-J1497-1582`**). If that string is missing or stale, redeploy or use **Reboot app** on [share.streamlit.io](https://share.streamlit.io/).
+- The CSV template caption includes **`DXF engine:`** and **`GENERATOR_ARTWORK_TAG`** (see `screenwall_generator.py`; updates when install-slot or bend artwork rules change). If that string is missing or stale, redeploy or use **Reboot app** on [share.streamlit.io](https://share.streamlit.io/).
 
 ---
 
@@ -65,17 +65,18 @@ This file is the short handoff for future work. If it conflicts with older prose
 
 - **Layer:** `fastening`; slot width = `fastener_dia`; length = `slot_length` or **`fastener_dia + 0.50"`**.
 - **L slots:** `_l_positions` — **2″** end margin, ~**12″** o.c., max **13″** spacing.
-- **J slots:** Align to perforation rows/columns; normal position from bend geometry + `BD`.
+- **J lip slots:** Shop rule in code: **(slot center to blank outer lip, OC) = nominal CSV F2 − (hole center to inner finished-face edge, OC)** (`_j_slot_axis_coord_shop_ortho`, nominal from `flange2_depth` or MIX `*_f2`). Stations use only the **outermost** perforation row/column for that flange (stagger-safe); along-flange spacing is never **greater** than **12″** c–c (`FASTENING_J_MAX_OC_IN`); tighter when perforations require. **J+J** corners: station list trims by **developed** `f2` from each blank corner along that flange so slots stay in material outside the miter. Normal position is clamped inside the developed lip (`SideDef.f2`). RT J slots use the same nominal-F2 rule with finished-face edge sampled at each hole (`_j_slot_normal_rt`).
+- **DXF orientation:** Generator assumes **inside face up** in plan view; panel ID stick text is placed for that view and may read on the leg that becomes **hidden after forming** when the ID lands on an L flange.
 
 ---
 
 ## Intentional gaps
 
 - **Nesting** — `nest_panels` / `write_nesting_dxf` still stubs.
-- **Fastening / face holes** — Next area to harden (margins, grid vs face, RT, etc.).
+- **Fastening / face holes** — J lip rules above are implemented; further hardening (margins, exotic RT corners, validation) remains optional.
 
 ---
 
 ## Suggested next-chat prompt
 
-`Use CURRENT_STATE.md and KnownTruths; generator is screenwall_generator.py. Next: fastening holes (and related DXF layers).`
+`Use CURRENT_STATE.md and KnownTruths; generator is screenwall_generator.py. Next: nesting or fastening edge cases if needed.`

@@ -9,7 +9,8 @@ Last compiled: 2026-05-14 — Perimeter `cut` void HC uses SHOP_FLANGE_CORNER_IN
   at calibration r,k,t, blended elsewhere). J bend-1 CL HC ± BA/2. RT: `_rt_blank_layout`
   and `_rt_nominal_face_corners` use CI for cut/finished_face consistency. notch_size=0 on
   cut (no 2×T corner notch, no J+J five-point square on cut). Primary shop geometry is
-  considered good in the current model; next focus: fastening / face holes. Fusion blank/f2
+  considered good in the current model; J lip install slots use nominal F2 shop offset +
+  outer perforation line + ≤12" o.c. + J+J trim (see current code status below). Fusion blank/f2
   checks in §3 unchanged as bend-theory anchor; cut HC spacing intentionally differs where CI ≠ BD.
 Code repo: jkl-rgb/Screenwall-Makr
 
@@ -505,11 +506,18 @@ CURRENT CODE STATUS:
   3. Bend centerlines on `bend` layer: L and J bend1; J bend2 when f2>0.
      L vs J bend1 offsets differ (_bend1_cl_positions, _draw_bend_lines, RT variant).
 
-  4. Install slots implemented
-     - layer: fastening
-     - J slots align to face perforation rows/columns
-     - L slots use 2" end offsets with floating spacing near 12" o.c.
-       and never above 13"
+  4. Install slots (`fastening` layer)
+     - L: 2" end margins, ~12" o.c., never above 13" between centers (`_l_positions`).
+     - J return lip: shop offset uses **nominal** lip depth from CSV (`flange2_depth` or
+       MIX `*_f2`): (slot center to blank **outer** lip, OC) = nominal_F2 − (hole center
+       to inner **finished_face** edge, OC). Stations are taken only from the **outermost**
+       perforation row or column toward that flange (stagger-safe); along-flange spacing
+       is never greater than 12" c–c (tighter when the grid requires). J+J miters: along-
+       flange coordinates trim by developed `f2` from each affected corner so slots stay
+       in material outside the 45° miter. RT J slots use the same nominal-F2 rule with the
+       finished-face edge sampled at each hole (`_j_slot_normal_rt`).
+     - DXF plan view is **inside face up**; panel ID stick text is placed for that view
+       (etch on an L leg can be hidden after forming when that leg folds outward).
 
   5. Panel ID (text layer)
      - Stick-font LWPOLYLINEs (no DXF TEXT / external fonts)
@@ -530,8 +538,9 @@ REMAINING ENGINEERING GAPS:
   1. Nesting remains unimplemented (stub functions only)
   2. Install slot sizing now supports explicit slot_length in CSV; if left blank
      the default remains fastener_dia + 0.50"
-  3. Fastening / face perforation holes — next area to harden (margins, grid vs
-     finished_face, RT, interaction with slots)
+  3. J install-slot rules (nominal F2 offset, outer perf line, ≤12" o.c., J+J trim) are
+     implemented in `screenwall_generator.py`; further edge cases (very coarse pitch,
+     margins vs slots) remain optional.
 
 CONFLICTS (requires resolution):
   None confirmed. All apparent formula conflicts resolve to different reference
@@ -558,8 +567,8 @@ SECTION 11 — DXF LAYER DEFINITIONS
   Bend 1 on `bend`: J = BA/2 from HC toward blank (HC quad = nominal face + BD ortho);
     L = `_f1_bend_inset_from_face` + BA/2 from nominal face (shop F1 inset ref + blend).
   Bend 2: f2 inward from blank edge (J flanges only).
-  Streamlit caption shows GENERATOR_ARTWORK_TAG (e.g. shop-f1inset168-L1665-J1497-1582)
-    to confirm deploy matches GitHub main.
+  Streamlit caption shows GENERATOR_ARTWORK_TAG from `screenwall_generator.py` to confirm
+  deploy matches GitHub main (string changes when artwork / slot rules change).
 
 
 ================================================================================
