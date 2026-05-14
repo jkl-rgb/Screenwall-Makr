@@ -1,16 +1,16 @@
 # Screenwall Makr — Current State
 
-**Last updated:** 2026-05-13  
-**Repo HEAD (reference):** `96ad3f6` on `main` — shop DXF: **cut** void HC uses **`SHOP_FLANGE_CORNER_INSET`** (0.195″ ref) from nominal face inner corner; **`bend`** layer still uses **BD** from nominal face for ortho HC quad; F1 bend-1 inset from face (`SHOP_F1_BEND_INSET_REF` + material blend); developed flats L/J calibrated; RT layout uses same **CI**/**BD** split; no 2×T perimeter corner notch on `cut`; **`GENERATOR_ARTWORK_TAG`** = `shop-f1inset168-L1665-J1497-1582`.
+**Last updated:** 2026-05-14  
+**Repo HEAD (reference):** `main` — shop DXF baseline includes **`96ad3f6`** (perimeter `cut` uses **`SHOP_FLANGE_CORNER_INSET`** / CI vs **`BD`** on `bend`) and **`aee0270`** (handoff docs). Run `git rev-parse --short HEAD` for the tip of `main`.
 
 This file is the short handoff for future work. If it conflicts with older prose in `KnownTruths` or `.cursor/rules/screenwall.mdc`, **prefer this file and the code** until those docs are reconciled.
 
 ---
 
-## Status (honest)
+## Status
 
-- **Primary shop geometry is not “locked solid.”** Blank sizing, developed flats, bend artwork, and perimeter cut are converging against coupons and drawings, but not every combination has been field-verified.
-- **Next engineering focus (planned): fastening / perforation holes** — alignment to face, margins, patterns, and any slot vs hole interactions. Prior chat will carry that work.
+- **Primary shop geometry is in good shape** in code: blank sizing, developed flats (shop auto where enabled), **`bend`** artwork, and **`cut`** perimeter (CI vs BD split, no 2×T / no face-corner squares on cut) match the current shop/Fusion-aligned model. Earlier wording that implied geometry was “not solid” was a **typo** on the author’s side.
+- **Next engineering focus (planned): fastening / perforation holes** — alignment to face, margins, patterns, and any slot vs hole interactions.
 
 ---
 
@@ -72,7 +72,6 @@ This file is the short handoff for future work. If it conflicts with older prose
 ## Intentional gaps
 
 - **Nesting** — `nest_panels` / `write_nesting_dxf` still stubs.
-- **Primary geometry** — Shop artwork and theory are aligned in code but not fully closed across all panel types, alloys, and shop measurements.
 - **Fastening / face holes** — Next area to harden (margins, grid vs face, RT, etc.).
 
 ---

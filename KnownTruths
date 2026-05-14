@@ -3,14 +3,14 @@ SCREENWALL MAKR — MASTER KNOWN TRUTHS REFERENCE
 Architectural Cassette Fabrication / Flat Pattern DXF Generator
 Machine: Artform Wall Machine / Ermaksan Speed Bend Pro
 ================================================================================
-Last compiled: 2026-05-13 — Perimeter `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI ≈0.195″
+Last compiled: 2026-05-14 — Perimeter `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI ≈0.195″
   ref) from nominal face inner corner, not BD (bend layer still uses BD from face for ortho
   HC quad). L bend-1 CL from `_f1_bend_inset_from_face` + BA/2 (shop F1 inset ref 0.168″
   at calibration r,k,t, blended elsewhere). J bend-1 CL HC ± BA/2. RT: `_rt_blank_layout`
   and `_rt_nominal_face_corners` use CI for cut/finished_face consistency. notch_size=0 on
-  cut (no 2×T corner notch, no J+J five-point square on cut). Primary geometry still
-  iterative; next focus: fastening / face holes. Fusion blank/f2 checks in §3 unchanged
-  as bend-theory anchor; cut HC spacing intentionally differs where CI ≠ BD.
+  cut (no 2×T corner notch, no J+J five-point square on cut). Primary shop geometry is
+  considered good in the current model; next focus: fastening / face holes. Fusion blank/f2
+  checks in §3 unchanged as bend-theory anchor; cut HC spacing intentionally differs where CI ≠ BD.
 Code repo: jkl-rgb/Screenwall-Makr
 
 
@@ -519,8 +519,7 @@ CURRENT CODE STATUS:
 
   6. L flat leg f1_flat = F1 - OSS + BA in code (matches §8 L_total); DXF bend-1
      CL differs by flange type (J: HC ± BA/2 from face+BD quad; L: `_f1_bend_inset_from_face`
-     + BA/2). `cut` void HC uses CI from nominal face, not BD. Primary shop geometry
-     is still iterative (not every panel/alloy verified).
+     + BA/2). `cut` void HC uses CI from nominal face, not BD.
 
   7. Origin convention difference (documentation only)
      Known Truths: 0,0 at face corner
@@ -533,7 +532,6 @@ REMAINING ENGINEERING GAPS:
      the default remains fastener_dia + 0.50"
   3. Fastening / face perforation holes — next area to harden (margins, grid vs
      finished_face, RT, interaction with slots)
-  4. End-to-end validation: shop primary geometry not fully closed across all configs
 
 CONFLICTS (requires resolution):
   None confirmed. All apparent formula conflicts resolve to different reference

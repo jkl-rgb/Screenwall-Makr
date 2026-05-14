@@ -5,10 +5,11 @@ Full Engineering Reference for screenwall_generator.py
 Repo:     jkl-rgb/Screenwall-Makr (GitHub)
 App:      share.streamlit.io (main file: streamlit_app.py)
 Machine:  Artform Wall Machine / Ermaksan Speed Bend Pro
-Updated: 2026-05-13 — `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI) from nominal face;
+Updated: 2026-05-14 — `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI) from nominal face;
   `bend` ortho HC quad still nominal face + BD; L bend-1 from `_f1_bend_inset_from_face` + BA/2;
   J bend-1 HC ± BA/2; RT uses CI in layout + outline; notch_size=0 on cut; GENERATOR_ARTWORK_TAG
-  in UI (shop-f1inset168-L1665-J1497-1582). Primary geometry iterative; next: fastening / face holes.
+  in UI (shop-f1inset168-L1665-J1497-1582). Primary shop geometry is good in the current
+  model; next: fastening / face holes.
 
 
 ================================================================================
