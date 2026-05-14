@@ -87,7 +87,7 @@ SHOP_FINISHED_FACE_INSET = SHOP_FLANGE_CORNER_INSET  # legacy name (same inches)
 L_BEND_CL_OUTWARD = 0.027  # used only in _f1_bend_inset_theory() for non-ref bend delta
 SHOP_F1_BEND_INSET_REF = 0.168  # F1 bend-1 CL inset from finished face (toward interior) @ ref (r,k,t)
 # Shown in Streamlit so you can confirm the running app loaded this tree (not an older copy).
-GENERATOR_ARTWORK_TAG = "shop-Jslot-F2nom-outerPerf12oc"
+GENERATOR_ARTWORK_TAG = "shop-Jslot-miterBase-F2nom-12oc"
 
 SHOP_FLAT_CALIBRATION_REF = {
     "ref_r": 0.0625,
@@ -1673,8 +1673,9 @@ def _draw_bend_lines_rt(msp, spec, lay, sides, rules, ba2, blank_w, blank_h, ffc
 # Along the flange, stations come only from the **outermost** perforation line
 # (row/column nearest that flange) so staggered grids do not hop to an inner line.
 # Spacing never exceeds FASTENING_J_MAX_OC_IN (12"); tighter if perforations require.
-# J+J miters: along-flange station list trims by developed f2 from each affected blank
-# corner so first/last slots stay in material before the 45° miter consumes the lip.
+# J+J miters: along-flange station list is limited to the **straight outer lip** between
+# miter ends (short base of the lip triangle), i.e. x in [void_x0+fh2, void_x1−fh2] on
+# bottom/top and analogous y on left/right, matching the cut outline—not trim from blank 0.
 # ---------------------------------------------------------------------------
 def _fastening_sides(spec, sides):
     fp=spec.fastening_pair.strip().lower()
@@ -1685,6 +1686,100 @@ def _fastening_sides(spec, sides):
     if fp=="lr": return [s for s in ("left","right") if s in active]
     name={"t":"top","b":"bottom","l":"left","r":"right"}.get(fp,fp)
     return [name] if name in active else []
+
+
+def _jj_corner_void_and_miter_f2(this_sd: SideDef, other_sd: SideDef, ci: float) -> tuple[float, float]:
+    """Match `_blank_outline` / `_blank_outline_rt` `_corner_params` (fh1, fh2)."""
+    if not this_sd.active:
+        return (0.0, 0.0)
+    is_jj = this_sd.ftype == "J" and other_sd.active and other_sd.ftype == "J"
+    if is_jj:
+        return (this_sd.f1 + ci, this_sd.f2)
+    return (this_sd.f1 + this_sd.f2 + ci, 0.0)
+
+
+def _ortho_void_inner_xy(blank_w: float, blank_h: float, sides) -> tuple[float, float, float, float]:
+    """Void inner hard-corner quad (same as `_blank_outline` before corner walk)."""
+    ci = SHOP_FLANGE_CORNER_INSET
+    el = _side_extra(sides["left"])
+    er = _side_extra(sides["right"])
+    eb = _side_extra(sides["bottom"])
+    et = _side_extra(sides["top"])
+    return el + ci, eb + ci, blank_w - er - ci, blank_h - et - ci
+
+
+def _jj_miter_trim_horizontal(sides, which: str) -> tuple[float, float]:
+    """Miter depth (fh2) along bottom or top at left/right void corners — same side as `which`."""
+    sb = sides["bottom"] if which == "bottom" else sides["top"]
+    sl, sr = sides["left"], sides["right"]
+    if not sb.active or sb.ftype != "J":
+        return (0.0, 0.0)
+    _, fh2_l = _jj_corner_void_and_miter_f2(sb, sl, SHOP_FLANGE_CORNER_INSET)
+    _, fh2_r = _jj_corner_void_and_miter_f2(sb, sr, SHOP_FLANGE_CORNER_INSET)
+    return (fh2_l, fh2_r)
+
+
+def _jj_miter_trim_vertical(sides, which: str) -> tuple[float, float]:
+    """Miter depth (fv2) along left or right at bottom/top void corners."""
+    sl = sides["left"] if which == "left" else sides["right"]
+    sb, st = sides["bottom"], sides["top"]
+    if not sl.active or sl.ftype != "J":
+        return (0.0, 0.0)
+    _, fv2_b = _jj_corner_void_and_miter_f2(sl, sb, SHOP_FLANGE_CORNER_INSET)
+    _, fv2_t = _jj_corner_void_and_miter_f2(sl, st, SHOP_FLANGE_CORNER_INSET)
+    return (fv2_b, fv2_t)
+
+
+def _rt_j_miter_span_x_bottom_top(spec, lay, sides, side_name: str) -> tuple[float, float] | None:
+    """RT: bottom/top outer lip straight segment in x when BL/BR (or TL/TR) share y within tol."""
+    if not _is_right_trapezoid(spec):
+        return None
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    ci = SHOP_FLANGE_CORNER_INSET
+    tol = 0.08
+    if side_name == "bottom":
+        sb = sides["bottom"]
+        if not sb.active or sb.ftype != "J" or abs(bl[1] - br[1]) > tol:
+            return None
+        _, fh2_l = _jj_corner_void_and_miter_f2(sb, sides["left"], ci)
+        _, fh2_r = _jj_corner_void_and_miter_f2(sb, sides["right"], ci)
+        x0, x1 = min(bl[0], br[0]), max(bl[0], br[0])
+        return (x0 + fh2_l, x1 - fh2_r)
+    if side_name == "top":
+        st = sides["top"]
+        if not st.active or st.ftype != "J" or abs(tl[1] - tr[1]) > tol:
+            return None
+        _, fh2_l = _jj_corner_void_and_miter_f2(st, sides["left"], ci)
+        _, fh2_r = _jj_corner_void_and_miter_f2(st, sides["right"], ci)
+        x0, x1 = min(tl[0], tr[0]), max(tl[0], tr[0])
+        return (x0 + fh2_l, x1 - fh2_r)
+    return None
+
+
+def _rt_j_miter_span_y_left_right(spec, lay, sides, side_name: str) -> tuple[float, float] | None:
+    """RT: left/right outer lip straight segment in y when BL/TL (or BR/TR) share x within tol."""
+    if not _is_right_trapezoid(spec):
+        return None
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    ci = SHOP_FLANGE_CORNER_INSET
+    tol = 0.08
+    if side_name == "left":
+        sl = sides["left"]
+        if not sl.active or sl.ftype != "J" or abs(bl[0] - tl[0]) > tol:
+            return None
+        _, fv2_b = _jj_corner_void_and_miter_f2(sl, sides["bottom"], ci)
+        _, fv2_t = _jj_corner_void_and_miter_f2(sl, sides["top"], ci)
+        y0, y1 = min(bl[1], tl[1]), max(bl[1], tl[1])
+        return (y0 + fv2_b, y1 - fv2_t)
+    if side_name == "right":
+        sr = sides["right"]
+        if not sr.active or sr.ftype != "J" or abs(br[0] - tr[0]) > tol:
+            return None
+        _, fv2_b = _jj_corner_void_and_miter_f2(sr, sides["bottom"], ci)
+        _, fv2_t = _jj_corner_void_and_miter_f2(sr, sides["top"], ci)
+        y0, y1 = min(br[1], tr[1]), max(br[1], tr[1])
+        return (y0 + fv2_b, y1 - fv2_t)
+    return None
 
 
 def _nominal_f2_for_side(spec: PanelSpec, side_name: str) -> float:
@@ -1699,42 +1794,6 @@ def _nominal_f2_for_side(spec: PanelSpec, side_name: str) -> float:
             }.get(side_name, 0.0)
         )
     return float(spec.flange2_depth or 0.0)
-
-
-def _jj_trim_along_x_from_blank(sides, side_name: str, blank_w: float) -> tuple[float, float]:
-    """Blank-x trim from each end for bottom/top J slots (J+J miter removes outer lip material)."""
-    trim_l = trim_r = 0.0
-    if side_name == "bottom":
-        sb, sl, sr = sides["bottom"], sides["left"], sides["right"]
-        if sb.active and sb.ftype == "J" and sl.active and sl.ftype == "J" and sb.f2 > 0:
-            trim_l = sb.f2
-        if sb.active and sb.ftype == "J" and sr.active and sr.ftype == "J" and sb.f2 > 0:
-            trim_r = sb.f2
-    elif side_name == "top":
-        st, sl, sr = sides["top"], sides["left"], sides["right"]
-        if st.active and st.ftype == "J" and sl.active and sl.ftype == "J" and st.f2 > 0:
-            trim_l = st.f2
-        if st.active and st.ftype == "J" and sr.active and sr.ftype == "J" and st.f2 > 0:
-            trim_r = st.f2
-    return trim_l, trim_r
-
-
-def _jj_trim_along_y_from_blank(sides, side_name: str, blank_h: float) -> tuple[float, float]:
-    """Blank-y trim from bottom/top for left/right J slots (J+J miter)."""
-    trim_b = trim_t = 0.0
-    if side_name == "left":
-        sl, sb, st = sides["left"], sides["bottom"], sides["top"]
-        if sl.active and sl.ftype == "J" and sb.active and sb.ftype == "J" and sl.f2 > 0:
-            trim_b = sl.f2
-        if sl.active and sl.ftype == "J" and st.active and st.ftype == "J" and sl.f2 > 0:
-            trim_t = sl.f2
-    elif side_name == "right":
-        sr, sb, st = sides["right"], sides["bottom"], sides["top"]
-        if sr.active and sr.ftype == "J" and sb.active and sb.ftype == "J" and sr.f2 > 0:
-            trim_b = sr.f2
-        if sr.active and sr.ftype == "J" and st.active and st.ftype == "J" and sr.f2 > 0:
-            trim_t = sr.f2
-    return trim_b, trim_t
 
 
 def _j_outer_face_holes(face_holes: list[tuple[float, float]], side_name: str, tol: float = 0.0625):
@@ -1789,16 +1848,47 @@ def _j_slot_stations_along_flange(
     sides,
     blank_w: float,
     blank_h: float,
+    *,
+    slot_len: float = 0.0,
+    spec: Optional[PanelSpec] = None,
+    lay: Optional[dict] = None,
 ) -> list[float]:
-    """Along-flange coordinates (x for bottom/top, y for left/right) for J install slots."""
+    """Along-flange coordinates (x for bottom/top, y for left/right) for J install slots.
+
+    Stations are restricted to the **straight outer lip** between miter ends (same as the
+    cut outline short base), inset by half slot length so the slot body does not enter
+    the miter triangle.
+    """
     outer = _j_outer_face_holes(face_holes, side_name)
+    pad = max(slot_len * 0.5, 0.0)
+
+    span_rt: tuple[float, float] | None = None
+    if spec is not None and lay is not None:
+        if side_name in ("bottom", "top"):
+            span_rt = _rt_j_miter_span_x_bottom_top(spec, lay, sides, side_name)
+        else:
+            span_rt = _rt_j_miter_span_y_left_right(spec, lay, sides, side_name)
+
     if side_name in ("bottom", "top"):
-        trim_l, trim_r = _jj_trim_along_x_from_blank(sides, side_name, blank_w)
-        lo, hi = trim_l, blank_w - trim_r
+        if span_rt is not None:
+            lo, hi = span_rt[0] + pad, span_rt[1] - pad
+        else:
+            fx0, fy0, fx1, fy1 = _ortho_void_inner_xy(blank_w, blank_h, sides)
+            fh2_l, fh2_r = _jj_miter_trim_horizontal(sides, side_name)
+            lo, hi = fx0 + fh2_l + pad, fx1 - fh2_r - pad
+        if hi < lo - 1e-9:
+            return []
         xs = sorted({round(x, 6) for x, _ in outer if lo - 1e-9 <= x <= hi + 1e-9})
         return _select_slots_outer_line(xs)
-    trim_b, trim_t = _jj_trim_along_y_from_blank(sides, side_name, blank_h)
-    lo, hi = trim_b, blank_h - trim_t
+
+    if span_rt is not None:
+        lo, hi = span_rt[0] + pad, span_rt[1] - pad
+    else:
+        fx0, fy0, fx1, fy1 = _ortho_void_inner_xy(blank_w, blank_h, sides)
+        fv2_b, fv2_t = _jj_miter_trim_vertical(sides, side_name)
+        lo, hi = fy0 + fv2_b + pad, fy1 - fv2_t - pad
+    if hi < lo - 1e-9:
+        return []
     ys = sorted({round(y, 6) for _, y in outer if lo - 1e-9 <= y <= hi + 1e-9})
     return _select_slots_outer_line(ys)
 
@@ -2014,7 +2104,10 @@ def _panel_id_anchor(spec, sides, ff_edge, face_holes, fx0, fy0, face_w, face_h,
     sd = sides[side_name]
     if side_name in ("top", "bottom"):
         along_positions = (
-            _j_slot_stations_along_flange(face_holes, side_name, sides, blank_w, blank_h)
+            _j_slot_stations_along_flange(
+                face_holes, side_name, sides, blank_w, blank_h,
+                slot_len=slot_length, spec=spec, lay=None,
+            )
             if sd.ftype == "J"
             else [fx0 + p for p in _l_positions(face_w)]
         )
@@ -2035,7 +2128,10 @@ def _panel_id_anchor(spec, sides, ff_edge, face_holes, fx0, fy0, face_w, face_h,
         }
 
     along_positions = (
-        _j_slot_stations_along_flange(face_holes, side_name, sides, blank_w, blank_h)
+        _j_slot_stations_along_flange(
+            face_holes, side_name, sides, blank_w, blank_h,
+            slot_len=slot_length, spec=spec, lay=None,
+        )
         if sd.ftype == "J"
         else [fy0 + p for p in _l_positions(face_h)]
     )
@@ -2119,7 +2215,10 @@ def _draw_fastening_slots(msp, spec, ffx0, ffy0, ffx1, ffy1, face_w, face_h,
         if sn in ("bottom","top"):
             is_b=(sn=="bottom")
             if sd.ftype=="J":
-                xs=_j_slot_stations_along_flange(face_holes, sn, sides, blank_w, blank_h)
+                xs=_j_slot_stations_along_flange(
+                    face_holes, sn, sides, blank_w, blank_h,
+                    slot_len=flen, spec=spec, lay=None,
+                )
                 for px in xs:
                     col_holes = _holes_on_same_col(face_holes, px)
                     hy = _j_slot_normal_ortho(
@@ -2136,7 +2235,10 @@ def _draw_fastening_slots(msp, spec, ffx0, ffy0, ffx1, ffy1, face_w, face_h,
         else:
             is_l=(sn=="left")
             if sd.ftype=="J":
-                ys=_j_slot_stations_along_flange(face_holes, sn, sides, blank_w, blank_h)
+                ys=_j_slot_stations_along_flange(
+                    face_holes, sn, sides, blank_w, blank_h,
+                    slot_len=flen, spec=spec, lay=None,
+                )
                 for py in ys:
                     row_holes = _holes_on_same_row(face_holes, py)
                     hx = _j_slot_normal_ortho(
@@ -2199,7 +2301,10 @@ def _draw_fastening_slots_rt(msp, spec, lay, ff_dict, ffc, sides, blank_w, blank
         sd = sides[sn]
         if sn in ("bottom", "top"):
             if sd.ftype == "J":
-                xs = _j_slot_stations_along_flange(face_holes, sn, sides, blank_w, blank_h)
+                xs = _j_slot_stations_along_flange(
+                    face_holes, sn, sides, blank_w, blank_h,
+                    slot_len=flen, spec=spec, lay=lay,
+                )
                 for px in xs:
                     col = _holes_on_same_col(face_holes, px)
                     hy = _j_slot_normal_rt(sn, spec, sides, blank_w, blank_h, ffc, col or face_holes, flen)
@@ -2218,7 +2323,10 @@ def _draw_fastening_slots_rt(msp, spec, lay, ff_dict, ffc, sides, blank_w, blank
                 _add_slot(msp, px, hy, fdia, flen, "horizontal", "fastening")
         else:
             if sd.ftype == "J":
-                ys = _j_slot_stations_along_flange(face_holes, sn, sides, blank_w, blank_h)
+                ys = _j_slot_stations_along_flange(
+                    face_holes, sn, sides, blank_w, blank_h,
+                    slot_len=flen, spec=spec, lay=lay,
+                )
                 for py in ys:
                     row = _holes_on_same_row(face_holes, py)
                     hx = _j_slot_normal_rt(sn, spec, sides, blank_w, blank_h, ffc, row or face_holes, flen)
