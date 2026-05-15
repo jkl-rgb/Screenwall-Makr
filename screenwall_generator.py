@@ -87,7 +87,7 @@ SHOP_FINISHED_FACE_INSET = SHOP_FLANGE_CORNER_INSET  # legacy name (same inches)
 L_BEND_CL_OUTWARD = 0.027  # used only in _f1_bend_inset_theory() for non-ref bend delta
 SHOP_F1_BEND_INSET_REF = 0.168  # F1 bend-1 CL inset from finished face (toward interior) @ ref (r,k,t)
 # Shown in Streamlit so you can confirm the running app loaded this tree (not an older copy).
-GENERATOR_ARTWORK_TAG = "shop-Jslot-miterBase-F2nom-12oc"
+GENERATOR_ARTWORK_TAG = "shop-RT-panelId-parallel-flange"
 
 SHOP_FLAT_CALIBRATION_REF = {
     "ref_r": 0.0625,
@@ -2067,6 +2067,104 @@ def _preferred_id_side(sides):
     return None
 
 
+def _rt_parallel_side(spec: PanelSpec) -> str:
+    """Finished-face edge parallel to CSV width (not the hypotenuse)."""
+    return "bottom" if (spec.rt_opposing_edge or "top").strip().lower() == "top" else "top"
+
+
+def _rt_angled_side(spec: PanelSpec) -> str:
+    p = _rt_parallel_side(spec)
+    return "top" if p == "bottom" else "bottom"
+
+
+def _preferred_id_side_rt(spec: PanelSpec, sides) -> Optional[str]:
+    """Panel ID on the parallel RT edge; never the angled hypotenuse."""
+    parallel = _rt_parallel_side(spec)
+    angled = _rt_angled_side(spec)
+    if sides[parallel].active:
+        return parallel
+    for name in ("left", "right"):
+        if sides[name].active:
+            return name
+    for name in ("top", "bottom", "left", "right"):
+        if name != angled and sides[name].active:
+            return name
+    return None
+
+
+def _panel_id_anchor_rt(
+    spec: PanelSpec,
+    sides,
+    lay: dict,
+    ffc,
+    face_holes,
+    blank_w: float,
+    blank_h: float,
+    slot_length: float,
+):
+    """Place panel ID on the parallel (flat) flange, or a vertical leg — not the angled edge."""
+    side_name = _preferred_id_side_rt(spec, sides)
+    if not side_name:
+        return None
+
+    bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+    ff_bl, ff_br, ff_tr, ff_tl = ffc
+    o = lay["outer"]
+    fx0, fx1 = bl[0], br[0]
+    face_w = fx1 - fx0
+    fast_sides = set(_fastening_sides(spec, sides))
+    sd = sides[side_name]
+
+    if side_name in ("bottom", "top"):
+        along_positions = (
+            _j_slot_stations_along_flange(
+                face_holes, side_name, sides, blank_w, blank_h,
+                slot_len=slot_length, spec=spec, lay=lay,
+            )
+            if sd.ftype == "J"
+            else [fx0 + p for p in _l_positions(face_w)]
+        )
+        has_slots = side_name in fast_sides
+        along_x = _panel_id_along_coordinate(fx0, face_w, along_positions, has_slots, slot_length)
+        if side_name == "bottom":
+            ff_y = ff_bl[1]
+            oy = o[0][1]
+        else:
+            ff_y = max(ff_tl[1], ff_tr[1])
+            oy = max(o[2][1], o[3][1])
+        if sd.ftype == "J":
+            cy = sd.f2 / 2.0 if side_name == "bottom" else blank_h - sd.f2 / 2.0
+        else:
+            cy = (ff_y + oy) * 0.5
+        return {"side": side_name, "x": along_x, "y": cy, "rotation": 0.0}
+
+    # Vertical leg (left / right): span is leg height, normal is mid-width on that side.
+    if side_name == "left":
+        leg_span = tl[1] - bl[1]
+        ff_x = ff_bl[0]
+        ox = o[0][0]
+    else:
+        leg_span = tr[1] - br[1]
+        ff_x = ff_br[0]
+        ox = o[1][0]
+    leg_span = max(leg_span, 1e-6)
+    along_positions = (
+        _j_slot_stations_along_flange(
+            face_holes, side_name, sides, blank_w, blank_h,
+            slot_len=slot_length, spec=spec, lay=lay,
+        )
+        if sd.ftype == "J"
+        else [min(bl[1], br[1]) + p for p in _l_positions(leg_span)]
+    )
+    has_slots = side_name in fast_sides
+    along_y = _panel_id_along_coordinate(min(bl[1], br[1]), leg_span, along_positions, has_slots, slot_length)
+    if sd.ftype == "J":
+        cx = sd.f2 / 2.0 if side_name == "left" else blank_w - sd.f2 / 2.0
+    else:
+        cx = (ff_x + ox) * 0.5
+    return {"side": side_name, "x": cx, "y": along_y, "rotation": 90.0}
+
+
 def _holes_on_same_row(face_holes, y, tol=0.05):
     return [(x, hy) for x, hy in face_holes if abs(hy - y) <= tol]
 
@@ -2183,9 +2281,33 @@ def _draw_stick_text(msp, text, x, y, height, rotation_deg, layer):
         cursor_x += advance
 
 
-def _draw_panel_id_text(doc, msp, spec, sides, ff_edge, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd):
+def _draw_panel_id_text(
+    doc,
+    msp,
+    spec,
+    sides,
+    ff_edge,
+    face_holes,
+    fx0,
+    fy0,
+    face_w,
+    face_h,
+    blank_w,
+    blank_h,
+    bd,
+    *,
+    lay=None,
+    ffc=None,
+):
     slot_length = spec.slot_length if spec.slot_length is not None else (spec.fastener_dia + INSTALL_SLOT_EXTRA)
-    anchor = _panel_id_anchor(spec, sides, ff_edge, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length)
+    if lay is not None and ffc is not None and _is_right_trapezoid(spec):
+        anchor = _panel_id_anchor_rt(
+            spec, sides, lay, ffc, face_holes, blank_w, blank_h, slot_length
+        )
+    else:
+        anchor = _panel_id_anchor(
+            spec, sides, ff_edge, face_holes, fx0, fy0, face_w, face_h, blank_w, blank_h, bd, slot_length
+        )
     if not anchor:
         return
 
@@ -2399,7 +2521,10 @@ def generate_panel_dxf(spec, outdir):
         max_ffy = max(p[1] for p in ffc)
         ff_face_h = max_ffy - min_ffy
         _draw_fastening_slots_rt(msp, spec, lay, ff_dict, ffc, sides, bw, bh, bd, face_holes)
-        _draw_panel_id_text(doc, msp, spec, sides, ff_dict, face_holes, fx0, min_ffy, face_w, ff_face_h, bw, bh, bd)
+        _draw_panel_id_text(
+            doc, msp, spec, sides, ff_dict, face_holes,
+            fx0, min_ffy, face_w, ff_face_h, bw, bh, bd, lay=lay, ffc=ffc,
+        )
         os.makedirs(outdir, exist_ok=True)
         doc.saveas(os.path.join(outdir, f"{spec.panel_id}.dxf"))
         return

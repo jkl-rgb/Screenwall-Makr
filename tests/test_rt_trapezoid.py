@@ -3,17 +3,34 @@ import os
 import tempfile
 import unittest
 
+import ezdxf
+
 from screenwall_generator import (
     PanelSpec,
+    SHOP_FLANGE_CORNER_INSET,
     flat_size,
     generate_panel_dxf,
     parse_csv,
     resolve_sides,
     _is_right_trapezoid,
+    _panel_id_anchor_rt,
+    _rt_nominal_face_corners,
     _rt_blank_layout,
+    _rt_parallel_side,
     get_rules,
     _bd,
 )
+
+
+def _text_layer_points(path: str) -> list[tuple[float, float]]:
+    doc = ezdxf.readfile(path)
+    pts = []
+    for e in doc.modelspace():
+        if e.dxftype() != "LWPOLYLINE" or e.dxf.layer != "text":
+            continue
+        for p in e.get_points("xy"):
+            pts.append((float(p[0]), float(p[1])))
+    return pts
 
 
 def _rt_spec(**overrides):
@@ -93,6 +110,37 @@ class RightTrapezoidTests(unittest.TestCase):
             self.assertTrue(os.path.isfile(path))
         finally:
             os.unlink(path)
+            os.rmdir(td)
+
+    def test_panel_id_on_parallel_bottom_when_opposing_top(self):
+        s = _rt_spec(panel_id="RT_ID_BOT")
+        sides = resolve_sides(s)
+        rules = get_rules(s)
+        bd = _bd(rules["r"], rules["k"], s.thickness)
+        lay = _rt_blank_layout(s, sides, bd)
+        bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
+        ffc = list(_rt_nominal_face_corners(bl, br, tr, tl, sides, SHOP_FLANGE_CORNER_INSET))
+        ff_bl = ffc[0]
+        o_bl = lay["outer"][0]
+        self.assertEqual(_rt_parallel_side(s), "bottom")
+        anchor = _panel_id_anchor_rt(s, sides, lay, ffc, [], lay["bw"], lay["bh"], 0.75)
+        self.assertIsNotNone(anchor)
+        self.assertEqual(anchor["side"], "bottom")
+        self.assertAlmostEqual(anchor["y"], (ff_bl[1] + o_bl[1]) * 0.5, places=3)
+
+        td = tempfile.mkdtemp()
+        try:
+            generate_panel_dxf(s, td)
+            path = os.path.join(td, "RT_ID_BOT.dxf")
+            pts = _text_layer_points(path)
+            self.assertTrue(pts)
+            ys = [p[1] for p in pts]
+            cy = (min(ys) + max(ys)) * 0.5
+            self.assertLess(cy, min(tr[1], tl[1]) - 1.0)
+            self.assertGreater(cy, min(o_bl[1], ff_bl[1]) - 0.05)
+            self.assertLess(cy, max(o_bl[1], ff_bl[1]) + 0.05)
+        finally:
+            os.unlink(os.path.join(td, "RT_ID_BOT.dxf"))
             os.rmdir(td)
 
     def test_parse_csv_rt_row(self):
