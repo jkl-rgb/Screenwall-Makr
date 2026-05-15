@@ -3,7 +3,11 @@ SCREENWALL MAKR — MASTER KNOWN TRUTHS REFERENCE
 Architectural Cassette Fabrication / Flat Pattern DXF Generator
 Machine: Artform Wall Machine / Ermaksan Speed Bend Pro
 ================================================================================
-Last compiled: 2026-05-14 — Perimeter `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI ≈0.195″
+RELEASE: Beta v0.1.0 — First Draft (2026-05-15). Team testing milestone; not production sign-off.
+  UI: Streamlit title "Screenwall Makr Beta"; version from APP_VERSION in screenwall_generator.py.
+  See README.md and CURRENT_STATE.md for scope, CSV tips, and batch limits.
+
+Last compiled: 2026-05-15 — Perimeter `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI ≈0.195″
   ref) from nominal face inner corner, not BD (bend layer still uses BD from face for ortho
   HC quad). L bend-1 CL from `_f1_bend_inset_from_face` + BA/2 (shop F1 inset ref 0.168″
   at calibration r,k,t, blended elsewhere). J bend-1 CL HC ± BA/2. RT: `_rt_blank_layout`
@@ -521,6 +525,9 @@ CURRENT CODE STATUS:
 
   5. Panel ID (text layer)
      - Stick-font LWPOLYLINEs (no DXF TEXT / external fonts)
+     - Ortho: `_preferred_id_side` (first L in order top/right/bottom/left).
+     - RT: `_panel_id_anchor_rt` — parallel flange only (`_rt_parallel_side`), not
+       the angled hypotenuse; midpoint between finished_face and outer on that leg.
      - If the chosen ID flange is also in fastening_pair: anchor clears the
        first slot (≥4" from flange start from fx0/fy0, and past first slot center
        + half slot length + small gap); else mid-flange.
@@ -567,8 +574,8 @@ SECTION 11 — DXF LAYER DEFINITIONS
   Bend 1 on `bend`: J = BA/2 from HC toward blank (HC quad = nominal face + BD ortho);
     L = `_f1_bend_inset_from_face` + BA/2 from nominal face (shop F1 inset ref + blend).
   Bend 2: f2 inward from blank edge (J flanges only).
-  Streamlit caption shows GENERATOR_ARTWORK_TAG from `screenwall_generator.py` to confirm
-  deploy matches GitHub main (string changes when artwork / slot rules change).
+  Streamlit: page title "Screenwall Makr Beta"; header shows APP_VERSION (Beta v0.1.0 First Draft).
+  Caption shows GENERATOR_ARTWORK_TAG from `screenwall_generator.py` to confirm deploy build.
 
 
 ================================================================================

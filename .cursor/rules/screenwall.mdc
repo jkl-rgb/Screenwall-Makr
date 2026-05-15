@@ -5,12 +5,10 @@ Full Engineering Reference for screenwall_generator.py
 Repo:     jkl-rgb/Screenwall-Makr (GitHub)
 App:      share.streamlit.io (main file: streamlit_app.py)
 Machine:  Artform Wall Machine / Ermaksan Speed Bend Pro
-Updated: 2026-05-14 — `cut` void HC uses SHOP_FLANGE_CORNER_INSET (CI) from nominal face;
-  `bend` ortho HC quad still nominal face + BD; L bend-1 from `_f1_bend_inset_from_face` + BA/2;
-  J bend-1 HC ± BA/2; RT uses CI in layout + outline; notch_size=0 on cut; GENERATOR_ARTWORK_TAG
-  in UI (from `screenwall_generator.py`, updates with artwork/slot rules). J lip install slots:
-  nominal F2 − hole-to-face OC to blank outer; outer perf line only; ≤12" o.c.; J+J corner trim.
-  DXF plan: inside face up. Primary shop geometry is good in the current model; next: nesting / edge cases.
+Updated: 2026-05-15 — **Beta v0.1.0 First Draft** (team testing). APP_VERSION in screenwall_generator.py;
+  Streamlit title "Screenwall Makr Beta". `cut` void HC uses CI; J lip slots nominal F2 shop rule;
+  J+J miter short-base trim; RT panel ID on parallel flange (`_panel_id_anchor_rt`). See README.md,
+  CURRENT_STATE.md. Next: nesting, duplicate panel_id UX. No coded batch row limit; unique panel_id required.
 
 
 ================================================================================

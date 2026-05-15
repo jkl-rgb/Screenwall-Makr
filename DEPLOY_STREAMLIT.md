@@ -1,38 +1,59 @@
-# Screenwall Makr - Streamlit deployment
+# Screenwall Makr — Streamlit deployment
+
+**Release:** Beta v0.1.0 — First Draft (2026-05-15)
 
 ## Files that belong in the repo root
-- screenwall_generator.py
-- streamlit_app.py
-- requirements.txt
+
+- `screenwall_generator.py`
+- `streamlit_app.py`
+- `requirements.txt`
+- `README.md`, `CURRENT_STATE.md`, `KnownTruths` (documentation)
 
 ## Folder that belongs in the repo
-- .streamlit/secrets.toml
+
+- `.streamlit/secrets.toml` (optional sign-in)
 
 ## Run locally
-python -m venv .venv
 
-### Windows PowerShell
+```powershell
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 streamlit run streamlit_app.py
+```
 
-### macOS/Linux
+```bash
+python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 streamlit run streamlit_app.py
+```
 
 ## Streamlit Community Cloud
-1. Push the repo to GitHub.
+
+1. Push the repo to GitHub (`main`).
 2. Go to https://share.streamlit.io/
-3. Click New app.
-4. Select repo: jkl-rgb/Screenwall-Makr
-5. Branch: main
-6. Main file path: streamlit_app.py
-7. Add secrets from .streamlit/secrets.toml if you want sign-in enabled.
-8. Deploy.
+3. **New app** → repo `jkl-rgb/Screenwall-Makr`, branch `main`, main file `streamlit_app.py`.
+4. Add secrets from `.streamlit/secrets.toml` if you want sign-in enabled.
+5. Deploy.
 
-## Updating the live app (important)
+## Updating the live app
 
-- **Community Cloud always runs code from GitHub**, not from your laptop. After editing `screenwall_generator.py` or `streamlit_app.py`, **commit and push to `main`**, then wait for the automatic rebuild or open the app on [share.streamlit.io](https://share.streamlit.io/) and use **⋮ → Reboot app**.
+- Community Cloud runs **GitHub `main`**, not your laptop. After changes: **commit + push**, wait for rebuild, or **⋮ → Reboot app**.
 
-- **Sanity check:** On the app page, under “Download CSV template”, the caption includes **`DXF engine:`** and **`GENERATOR_ARTWORK_TAG`** (defined in `screenwall_generator.py`; it changes when bend/slot artwork rules change). If it is missing or wrong, the deployed revision is not the one you think it is.
+## Sanity check (Beta deploy)
+
+On the app page:
+
+1. Browser tab title: **Screenwall Makr Beta**
+2. Header includes a **Beta** badge next to the title
+3. Under the subtitle: **`Beta v0.1.0 · Beta — First Draft · 2026-05-15`**
+4. Under “Download CSV template”, caption includes **`Release:`** with the same string and **`DXF engine:`** with `GENERATOR_ARTWORK_TAG` from `screenwall_generator.py` (e.g. `shop-RT-panelId-parallel-flange`)
+
+If any of these are missing or old, the deployed revision is not current.
+
+## Beta testing notes
+
+- One **unique `panel_id`** per CSV row (duplicates overwrite in the ZIP).
+- **`flange_code`** must match allowed codes exactly (`J4S`, not `J4L`).
+- Large batches (100+ rows) may be slow or hit platform memory limits when zipping.

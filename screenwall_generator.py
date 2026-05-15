@@ -86,6 +86,10 @@ SHOP_FLANGE_CORNER_INSET = 0.195  # face corner → inside flange leg edge (cut 
 SHOP_FINISHED_FACE_INSET = SHOP_FLANGE_CORNER_INSET  # legacy name (same inches)
 L_BEND_CL_OUTWARD = 0.027  # used only in _f1_bend_inset_theory() for non-ref bend delta
 SHOP_F1_BEND_INSET_REF = 0.168  # F1 bend-1 CL inset from finished face (toward interior) @ ref (r,k,t)
+# Release identity (Streamlit UI imports these).
+APP_VERSION = "0.1.0"
+APP_RELEASE_LABEL = "Beta — First Draft"
+APP_RELEASE_DATE = "2026-05-15"
 # Shown in Streamlit so you can confirm the running app loaded this tree (not an older copy).
 GENERATOR_ARTWORK_TAG = "shop-RT-panelId-parallel-flange"
 

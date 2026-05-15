@@ -7,15 +7,18 @@ from pathlib import Path
 import streamlit as st
 
 from screenwall_generator import (
+    APP_RELEASE_DATE,
+    APP_RELEASE_LABEL,
+    APP_VERSION,
     GENERATOR_ARTWORK_TAG,
     INSTALL_SLOT_EXTRA,
     parse_csv,
     generate_panel_dxf,
 )
 
-st.set_page_config(page_title="Screenwall Makr", layout="wide")
+st.set_page_config(page_title="Screenwall Makr Beta", layout="wide")
 LOGO_PATH = Path(__file__).parent / "assets" / "artform_logo.png"
-APP_BUILD = "deploy-check-2026-05-12-1549"
+APP_DISPLAY_VERSION = f"Beta v{APP_VERSION} · {APP_RELEASE_LABEL} · {APP_RELEASE_DATE}"
 
 
 def _inline_image_base64(path: Path) -> str:
@@ -141,6 +144,20 @@ st.markdown("""
         color: #1d1d1f;
         margin: 0;
     }
+    .artform-beta {
+        display: inline-block;
+        margin-left: 0.35em;
+        padding: 0.12em 0.45em 0.18em;
+        font-size: 0.38em;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        vertical-align: middle;
+        color: #1d1d1f;
+        background: #f2f2f7;
+        border: 1px solid #d2d2d7;
+        border-radius: 0.35em;
+    }
     .artform-subtitle {
         max-width: 42rem;
         margin-top: 0.95rem;
@@ -202,13 +219,13 @@ with header_left:
     st.markdown(
         f"""
         <div class="artform-header">
-            <h1 class="artform-title">Screenwall Makr</h1>
+            <h1 class="artform-title">Screenwall Makr<span class="artform-beta">Beta</span></h1>
             <div class="artform-subtitle">
                 Flat pattern DXF generator for perforated screenwall panels,
                 with bend-aware flange geometry, install-slot placement, and
-                fabrication-ready CSV import controls.
+                fabrication-ready CSV import controls. Team testing release.
             </div>
-            <div class="artform-build">Build: {APP_BUILD}</div>
+            <div class="artform-build">{APP_DISPLAY_VERSION}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -258,7 +275,18 @@ with st.expander("Flange code reference", expanded=False):
   (inches). `width` is still the parallel span between the vertical legs. Leave `rt_*` blank for other codes.
 """)
 
-with st.expander("Material & gauge rules (READ FIRST)", expanded=False):
+with st.expander("Beta testing notes (READ FIRST)", expanded=False):
+    st.markdown("""
+**Release:** Beta v0.1.0 — First Draft (team testing, not production sign-off).
+
+- Use a **unique `panel_id`** on every row. Duplicate IDs overwrite the same DXF in the ZIP.
+- **`flange_code`** must be exact (`J4S`, `L4S`, …). Common typo: **`J4L`** → use **`J4S`**.
+- Save as **CSV (comma)**. In Notepad, confirm the header column is `flange_code` (no space).
+- **150+ panels** often work locally (~0.2 s/panel); Streamlit Cloud may time out or run out of memory on very large ZIPs.
+- Report issues with the **Release** and **DXF engine** strings shown in the caption below (proves which build ran).
+""")
+
+with st.expander("Material & gauge rules", expanded=False):
     st.markdown("""
 **Thickness column** accepts either a decimal (e.g. `0.1875`) or a gauge string (`16 ga`, `14 ga`, `11 ga`).
 
@@ -290,7 +318,7 @@ st.download_button(
 )
 st.caption(
     "Populate the template and upload below. All dimensions in inches. Import guidance lives in the expanders above. "
-    f"**DXF engine:** `{GENERATOR_ARTWORK_TAG}` · **UI build:** `{APP_BUILD}`"
+    f"**DXF engine:** `{GENERATOR_ARTWORK_TAG}` · **Release:** `{APP_DISPLAY_VERSION}`"
 )
 
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
