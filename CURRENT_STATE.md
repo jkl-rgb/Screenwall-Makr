@@ -16,6 +16,7 @@ This file is the short handoff for future work. If it conflicts with older prose
 - **G-code export:** optional `.nc` per panel (`gcode_export.py`) from the same in-memory drawing as the DXF (`build_panel_document`). Laser (M3/M5) or mill (Z-plunge) dialect; panel-ID etch → holes → slots → perimeter last; `finished_face`/`bend` reference-only (bend etch opt-in). Paths carry `(op=… layer=… shape=…)` comments for round-trip.
 - **Punch + laser combo export:** third machine style writes **two files per panel** for two machines — `{id}_punch.nc` (holes + install slots as single hits; RD/OB tool table in header for turret-station remap; serpentine hit order) and `{id}_laser.nc` (panel-ID etch + perimeter). Unpunchable features fall back to the laser file.
 - **G-code import (Tier 1):** `gcode_import.py` + "Build artwork from G-code" UI section. Parses laser / mill / turret-punch programs (G0–G3, I/J or R arcs, inch/mm, absolute/incremental); Screenwall-annotated files round-trip losslessly, foreign files classified by shape heuristics; rebuilds a layered ezdxf doc (DXF download + PDF preview). See `GCODE_IMPORT_PLAN.md`.
+- **Corner fold clearance (2026-08):** at every blank corner where two flanges fold, each flange end edge insets `thickness/2` (total gap = `thickness`, 1:1 with gauge; 3/32″ per side on 3/16″ 3003) so folded edges never clash. Square ends staircase through the hard corner; J+J miters offset perpendicular for a uniform lip gap; RT skew corners handled in vector form. CSV `corner_gap_override` sets total gap per row (0 disables). J slot stations trim for the shortened lip. Regression: `tests/fixtures/outline_golden.json` + `tests/test_corner_fold.py` prove byte-parity when disabled. Also fixed RT-bottom `br`/`tr` outline arrivals (previously drew a stray diagonal through those corner voids).
 - **Next engineering (post-beta):** G-code import Tier 2 (full `PanelSpec` recovery); nesting / sheet layout; duplicate-ID warnings; optional batch progress UI.
 
 ---
@@ -47,7 +48,7 @@ See `KnownTruths` §1–§3 for Fusion cross-checks.
 ## Streamlit (web)
 
 - Deploy from **`main`**; entry `streamlit_app.py`; page title **Screenwall Makr Beta**.
-- Confirm deploy: caption shows **`Release: Beta v0.1.0 · …`** and **`DXF engine:`** `GENERATOR_ARTWORK_TAG` (currently `shop-RT-panelId-parallel-flange`).
+- Confirm deploy: caption shows **`Release: Beta v0.1.0 · …`** and **`DXF engine:`** `GENERATOR_ARTWORK_TAG` (currently `shop-corner-fold-gap-1to1`).
 - Reboot app on [share.streamlit.io](https://share.streamlit.io/) after push if the version string is stale.
 
 ---

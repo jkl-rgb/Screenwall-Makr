@@ -28,6 +28,9 @@ STANDARD_HEADERS = [
     "fastener_dia", "slot_length",
     "stagger_angle", "margin",
     "shop_flat_mode",
+    # Total corner fold gap (in). Blank = thickness (1:1 with gauge, t/2 inset
+    # per side at every corner where two flanges fold); 0 disables.
+    "corner_gap_override",
 ]
 
 MIX_EXTRA_HEADERS = [
@@ -48,7 +51,7 @@ STANDARD_EXAMPLE = [
     "L4S", "2.0", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
-    "auto",
+    "auto", "",
     "", "", "", "", "", "", "", "", "", "", "", "",
     "", "", "",
 ]
@@ -58,7 +61,7 @@ MIX_EXAMPLE = [
     "MIX", "", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
-    "auto",
+    "auto", "",
     "J", "2.0", "2.25",   # top
     "J", "2.0", "2.25",   # bottom
     "L", "2.0", "",       # left
@@ -73,7 +76,7 @@ STEEL_EXAMPLE = [
     "L4S", "2.0", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "0.75",
     "60.0", "1.25",
-    "auto",
+    "auto", "",
     "", "", "", "", "", "", "", "", "", "", "", "",
     "", "", "",
 ]
@@ -83,7 +86,7 @@ RT_EXAMPLE = [
     "RT4S", "2.0", "",
     "0.75", "1.25", "staggered", "tb", "0.1875", "",
     "60.0", "1.25",
-    "auto",
+    "auto", "",
     "", "", "", "", "", "", "", "", "", "", "", "",
     "top", "24", "30",
 ]
