@@ -16,6 +16,8 @@ from screenwall_generator import (
     build_panel_document,
 )
 from gcode_export import GCodeConfig, doc_to_gcode, doc_to_gcode_combo
+from gcode_import import parse_gcode, paths_to_document, summarize
+from pdf_preview import paths_to_pdf
 from sample_data import TEMPLATE_CSV, build_sample_files, zip_files
 
 st.set_page_config(page_title="Screenwall Makr Beta", layout="wide")
@@ -459,3 +461,61 @@ if uploaded is not None:
                     )
         except Exception as e:
             st.error(str(e))
+
+# ---------------------------------------------------------------------------
+# Build artwork from G-code (import)
+# ---------------------------------------------------------------------------
+st.markdown('<div class="artform-rule"></div>', unsafe_allow_html=True)
+st.subheader("Build artwork from G-code")
+st.caption(
+    "Upload `.nc` programs to rebuild layered artwork. Screenwall-generated files "
+    "(laser, mill, or punch) re-import losslessly via their `(op=… layer=… shape=…)` "
+    "annotations; other 2D G-code is classified by shape — circles → holes, rounded "
+    "slots → install slots, closed loops → cut, long lines → bend, short strokes → text. "
+    "Supports G0–G3 (I/J or R arcs), inch/mm, absolute/incremental."
+)
+nc_uploads = st.file_uploader(
+    "Upload G-code (.nc)", type=["nc", "gcode", "tap", "txt"], accept_multiple_files=True
+)
+for nc_file in nc_uploads or []:
+    try:
+        text = nc_file.getvalue().decode("utf-8", errors="replace")
+        result = parse_gcode(text)
+        doc = paths_to_document(result.paths)
+        summary = summarize(result)
+        stem = Path(nc_file.name).stem
+        panel_name = summary["panel_id"] or stem
+        with st.expander(f"{nc_file.name} → `{panel_name}`", expanded=True):
+            if not result.paths:
+                st.warning("No machinable paths found in this program.")
+                continue
+            counts = ", ".join(f"{v} × `{k}`" for k, v in sorted(summary["paths_per_layer"].items()))
+            st.markdown(
+                f"**Dialect:** `{summary['dialect']}`"
+                f"{' (annotated — lossless)' if summary['annotated'] else ' (heuristic classification)'} · "
+                f"**Extents:** {summary['extents_in'][0]}″ × {summary['extents_in'][1]}″ · "
+                f"**Paths:** {counts}"
+                + (f" · **Hole Ø:** {', '.join(f'{d}″' for d in summary['hole_diameters'])}"
+                   if summary["hole_diameters"] else "")
+            )
+            for w in summary["warnings"]:
+                st.warning(w)
+            pdf_bytes = paths_to_pdf(result.paths, f"{panel_name} - imported from {nc_file.name}")
+            _show_pdf(pdf_bytes)
+            with tempfile.TemporaryDirectory() as nc_d:
+                dxf_path = Path(nc_d) / f"{panel_name}.dxf"
+                doc.saveas(str(dxf_path))
+                dxf_bytes = dxf_path.read_bytes()
+            c1, c2, _ = st.columns([1.2, 1.2, 3])
+            with c1:
+                st.download_button(
+                    f"⬇ {panel_name}.dxf", dxf_bytes, f"{panel_name}.dxf",
+                    mime="application/octet-stream", key=f"imp_dxf_{nc_file.name}",
+                )
+            with c2:
+                st.download_button(
+                    f"⬇ {panel_name}.pdf", pdf_bytes, f"{panel_name}.pdf",
+                    mime="application/pdf", key=f"imp_pdf_{nc_file.name}",
+                )
+    except Exception as e:
+        st.error(f"{nc_file.name}: {e}")

@@ -15,7 +15,8 @@ This file is the short handoff for future work. If it conflicts with older prose
 - **Batch CSV:** no coded row limit; ~150 panels ≈ 30 s locally. Use **unique `panel_id`** per row or the ZIP will contain one file per ID (last row wins). Very large batches may hit Streamlit Cloud memory/time when building the in-memory ZIP.
 - **G-code export:** optional `.nc` per panel (`gcode_export.py`) from the same in-memory drawing as the DXF (`build_panel_document`). Laser (M3/M5) or mill (Z-plunge) dialect; panel-ID etch → holes → slots → perimeter last; `finished_face`/`bend` reference-only (bend etch opt-in). Paths carry `(op=… layer=… shape=…)` comments for round-trip.
 - **Punch + laser combo export:** third machine style writes **two files per panel** for two machines — `{id}_punch.nc` (holes + install slots as single hits; RD/OB tool table in header for turret-station remap; serpentine hit order) and `{id}_laser.nc` (panel-ID etch + perimeter). Unpunchable features fall back to the laser file.
-- **Next engineering (post-beta):** G-code **import** (see `GCODE_IMPORT_PLAN.md`); nesting / sheet layout; duplicate-ID warnings; optional batch progress UI.
+- **G-code import (Tier 1):** `gcode_import.py` + "Build artwork from G-code" UI section. Parses laser / mill / turret-punch programs (G0–G3, I/J or R arcs, inch/mm, absolute/incremental); Screenwall-annotated files round-trip losslessly, foreign files classified by shape heuristics; rebuilds a layered ezdxf doc (DXF download + PDF preview). See `GCODE_IMPORT_PLAN.md`.
+- **Next engineering (post-beta):** G-code import Tier 2 (full `PanelSpec` recovery); nesting / sheet layout; duplicate-ID warnings; optional batch progress UI.
 
 ---
 

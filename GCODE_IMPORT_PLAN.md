@@ -1,6 +1,9 @@
 # G-code Import — Research & Implementation Plan
 
-**Status:** research complete, not yet implemented.
+**Status:** Tier 1 **implemented** in `gcode_import.py` (laser / mill / turret-punch
+dialects, annotated round-trip + heuristic classification, DXF rebuild, UI import
+section with PDF preview). Tier 2 (`PanelSpec` recovery) seeded by `summarize()`;
+full parametric recovery still open.
 **Companion feature:** `gcode_export.py` (shipped) — exports `.nc` per panel from the
 same in-memory drawing as the DXF writer.
 
