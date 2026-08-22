@@ -27,6 +27,22 @@ def _inline_image_base64(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
+def _show_pdf(data: bytes, height: int = 640) -> None:
+    """Inline PDF viewer: st.pdf when available, base64 embed otherwise."""
+    if hasattr(st, "pdf"):
+        try:
+            st.pdf(data, height=height)
+            return
+        except Exception:
+            pass
+    b64 = base64.b64encode(data).decode("ascii")
+    st.markdown(
+        f'<embed src="data:application/pdf;base64,{b64}" type="application/pdf" '
+        f'width="100%" height="{height}px" />',
+        unsafe_allow_html=True,
+    )
+
+
 def _nc_preview(data: bytes, max_lines: int = 36) -> str:
     lines = data.decode("ascii").splitlines()
     if len(lines) <= max_lines:
@@ -276,12 +292,19 @@ if st.session_state.get("show_sample"):
         f"Generated with the same engine as a CSV upload: the shop DXF, a single-machine "
         f"laser program, and the punch + laser combo pair ({n_holes} punch hits)."
     )
-    tab_laser, tab_punch, tab_combo_laser, tab_dxf = st.tabs([
+    tab_pdf, tab_laser, tab_punch, tab_combo_laser = st.tabs([
+        "PDF preview — geometry",
         f"{spec.panel_id}.nc — laser (all features)",
         f"{spec.panel_id}_punch.nc — turret punch hits",
         f"{spec.panel_id}_laser.nc — combo laser (etch + perimeter)",
-        f"{spec.panel_id}.dxf",
     ])
+    with tab_pdf:
+        st.caption(
+            "Flat-pattern geometry, one color per DXF layer: red = perimeter cut, "
+            "orange = perforations, blue = install slots, magenta = panel-ID etch, "
+            "dashed green = bend centerlines, dashed gray = finished face (reference)."
+        )
+        _show_pdf(sample_files[f"{spec.panel_id}.pdf"])
     with tab_laser:
         st.caption(
             "One machine does everything: panel-ID etch at mark power, then perforations, "
@@ -302,15 +325,27 @@ if st.session_state.get("show_sample"):
             "for the laser — the punched features are gone."
         )
         st.code(_nc_preview(sample_files[f"{spec.panel_id}_laser.nc"]), language="gcode")
-    with tab_dxf:
-        st.caption(
-            "The shop DXF (layers: cut / holes / fastening / bend / text / finished_face) is "
-            "binary — download the ZIP to open it in CAD/CAM."
-        )
-    dl_col, hide_col = st.columns([1.2, 5])
-    with dl_col:
+    st.markdown("**Download individual files**")
+    dl_specs = [
+        (f"{spec.panel_id}.pdf", "application/pdf"),
+        (f"{spec.panel_id}.dxf", "application/octet-stream"),
+        (f"{spec.panel_id}.nc", "text/plain"),
+        (f"{spec.panel_id}_punch.nc", "text/plain"),
+        (f"{spec.panel_id}_laser.nc", "text/plain"),
+    ]
+    for col, (fname, mime) in zip(st.columns(len(dl_specs)), dl_specs):
+        with col:
+            st.download_button(
+                f"⬇ {fname}",
+                sample_files[fname],
+                fname,
+                mime=mime,
+                key=f"dl_{fname}",
+            )
+    zip_col, hide_col = st.columns([1.2, 5])
+    with zip_col:
         st.download_button(
-            "⬇ Download sample (.zip)",
+            "⬇ Everything (.zip)",
             sample_zip,
             "screenwall_sample.zip",
             mime="application/zip",

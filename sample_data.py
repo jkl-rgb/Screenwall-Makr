@@ -15,6 +15,7 @@ from pathlib import Path
 
 from screenwall_generator import build_panel_document, parse_csv
 from gcode_export import GCodeConfig, doc_to_gcode, doc_to_gcode_combo
+from pdf_preview import doc_to_pdf
 
 # ---------------------------------------------------------------------------
 # CSV template (downloadable from the UI). Keep data-only: spreadsheet apps
@@ -105,6 +106,7 @@ def build_sample_files(config: GCodeConfig | None = None):
     """Generate the sample panel's full output set in memory.
 
     Returns (spec, files) where files maps filename -> bytes:
+      {id}.pdf            one-page geometry preview (color per layer)
       {id}.dxf            shop DXF
       {id}.nc             single-machine laser program
       {id}_punch.nc       combo: turret punch hits
@@ -120,7 +122,12 @@ def build_sample_files(config: GCodeConfig | None = None):
         dxf_path = Path(d) / f"{spec.panel_id}.dxf"
         doc.saveas(str(dxf_path))
         combo = doc_to_gcode_combo(doc, spec.panel_id, spec.thickness, cfg)
+        pdf_title = (
+            f"{spec.panel_id} - {spec.face_width} x {spec.face_height} in, "
+            f"{spec.thickness} in {spec.material} {spec.alloy}, {spec.flange_code}"
+        )
         files = {
+            f"{spec.panel_id}.pdf": doc_to_pdf(doc, pdf_title),
             f"{spec.panel_id}.dxf": dxf_path.read_bytes(),
             f"{spec.panel_id}.nc": doc_to_gcode(doc, spec.panel_id, spec.thickness, cfg).encode("ascii"),
             f"{spec.panel_id}_punch.nc": combo["punch"].encode("ascii"),

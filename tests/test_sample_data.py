@@ -18,6 +18,7 @@ class SampleDataTests(unittest.TestCase):
         spec, files = build_sample_files()
         self.assertEqual(spec.panel_id, "example_L4S")
         expected = {
+            "example_L4S.pdf",
             "example_L4S.dxf",
             "example_L4S.nc",
             "example_L4S_punch.nc",
@@ -25,6 +26,7 @@ class SampleDataTests(unittest.TestCase):
         }
         self.assertEqual(set(files), expected)
         self.assertGreater(len(files["example_L4S.dxf"]), 1000)  # real DXF payload
+        self.assertTrue(files["example_L4S.pdf"].startswith(b"%PDF-"))
         laser = files["example_L4S.nc"].decode("ascii")
         self.assertIn("G20 G90 G17", laser)
         self.assertIn("layer=cut", laser)
