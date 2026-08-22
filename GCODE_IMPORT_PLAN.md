@@ -4,6 +4,11 @@
 dialects, annotated round-trip + heuristic classification, DXF rebuild, UI import
 section with PDF preview). Tier 2 (`PanelSpec` recovery) seeded by `summarize()`;
 full parametric recovery still open.
+**Tier 1.5 (2026-08):** real-world Amada-style punch tapes — `%` tape markers,
+bare `X/Y[T]` hits (modal axes, attached tool words), `G92` / `G70` / `G72`
+positioning, **G36 / G28 / G26** pattern macro expansion, tool geometry from the
+post-processor SET-UP SHEET trailer. Validated against a shop-produced
+`WT-1.01 PUNCH.nc` (170-hit staggered grid via two G36 macros).
 **Companion feature:** `gcode_export.py` (shipped) — exports `.nc` per panel from the
 same in-memory drawing as the DXF writer.
 

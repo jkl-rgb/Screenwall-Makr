@@ -15,7 +15,11 @@ Layer/action assignment, in priority order:
 Three dialects are recognized automatically:
 - laser  (M3/M5 engagement, no Z motion)
 - mill   (engaged while Z < 0)
-- turret punch (single-hit X/Y blocks + RD/OB tool-table comments)
+- turret punch: Screenwall combo exports (RD/OB tool-table comments) AND
+  Amada-style tapes — '%' markers, bare X/Y[T] hit blocks, G92 preset,
+  G70/G72 no-punch positioning, pattern macros G36 (grid) / G28 (line) /
+  G26 (bolt circle), tool sizes recovered from the SET-UP SHEET appended
+  after the closing '%'.
 
 Supported motion: G0/G1/G2/G3 (I/J or R arcs), G20/G21, G90/G91, G17.
 Rejected with errors/warnings: G18/G19, cutter comp (G41/G42), canned
@@ -104,9 +108,73 @@ def _arc_sweep(p0, p1, center, ccw) -> float:
 def _is_punch_program(text: str) -> bool:
     if "turret punch program" in text:
         return True
-    has_hits = re.search(r"^X[-\d.]+ *Y[-\d.]+( +T\d+)?\s*$", text, re.M)
+    has_hits = re.search(r"^\s*X[-\d.]+\s*Y[-\d.]+\s*(T\d+)?\s*$", text, re.M)
+    has_pattern = re.search(r"^\s*(?:X[-\d.]+\s*Y[-\d.]+\s*)?G(?:26|28|36|66)\b", text, re.M)
     has_contour = re.search(r"^\s*G0?[123]\b", text, re.M)
-    return bool(has_hits and not has_contour and re.search(r"\bT\d+\b", text))
+    # (?<![A-Za-z]) instead of \b: tool words attach directly to coordinates
+    # (Y1.0T7 has no word boundary before the T).
+    return bool((has_hits or has_pattern) and not has_contour
+                and re.search(r"(?<![A-Za-z])T\d+", text))
+
+
+def _split_tape(text: str) -> tuple[str, str]:
+    """(program, trailer) split on RS-274 tape '%' markers.
+
+    Amada-style posts append a human-readable SET-UP SHEET after the closing
+    '%'; it is not G-code but carries the tool list (station -> type/size)."""
+    lines = text.splitlines()
+    marks = [i for i, ln in enumerate(lines) if ln.strip() == "%"]
+    if len(marks) >= 2:
+        return ("\n".join(lines[marks[0] + 1:marks[1]]),
+                "\n".join(lines[marks[1] + 1:]))
+    if len(marks) == 1:
+        return ("\n".join(lines[marks[0] + 1:]), "")
+    return (text, "")
+
+
+_DIMS_RE = re.compile(r"^([\d.]+)\s*[xX]\s*([\d.]+)$")
+
+
+def _tools_from_setup_sheet(trailer: str) -> dict:
+    """Recover tool geometry from a set-up sheet TOOL LIST.
+
+    Rows look like ``T139  ROUND  [angle]  0.750  170`` (station, type,
+    optional angle, size, hit count). A trailing integer >= 1 is treated as
+    the hit count and dropped; the last remaining number is the size."""
+    tools: dict[str, tuple] = {}
+    for ln in trailer.splitlines():
+        toks = ln.split()
+        if len(toks) < 3 or not re.fullmatch(r"T\d+", toks[0]):
+            continue
+        key = f"T{int(toks[0][1:]):02d}"
+        ttype = toks[1].upper()
+        nums: list[float] = []
+        dims = None
+        for t in toks[2:]:
+            dm = _DIMS_RE.match(t)
+            if dm:
+                dims = (float(dm.group(1)), float(dm.group(2)))
+                continue
+            try:
+                nums.append(float(t))
+            except ValueError:
+                pass
+        if len(nums) >= 2 and nums[-1] >= 1 and abs(nums[-1] - round(nums[-1])) < 1e-9:
+            nums = nums[:-1]  # hit count column
+        if ttype in ("ROUND", "RD", "RO", "CIRCLE"):
+            if nums and nums[-1] > 0:
+                tools[key] = ("RD", nums[-1])
+        elif ttype in ("OBROUND", "OBR", "OB", "OVAL", "SLOT"):
+            if dims:
+                ang = nums[0] if nums else 0.0
+                tools[key] = ("OB", min(dims), max(dims), ang)
+        elif ttype in ("RECT", "RECTANGLE", "SQ", "SQUARE"):
+            if dims:
+                ang = nums[0] if nums else 0.0
+                tools[key] = ("RECT", min(dims), max(dims), ang)
+            elif nums and nums[-1] > 0:
+                tools[key] = ("RECT", nums[-1], nums[-1], 0.0)
+    return tools
 
 
 # ---------------------------------------------------------------------------
@@ -146,38 +214,172 @@ def _circle_path(cx, cy, dia):
     }
 
 
+def _rect_path_from_hit(cx, cy, width, length, angle_deg):
+    """Rectangle/square punch hit (4 lines, closed) on the holes layer."""
+    a, b = length / 2.0, width / 2.0
+    th = math.radians(angle_deg)
+    tx, ty = math.cos(th), math.sin(th)
+
+    def P(px, py):
+        return (cx + px * tx - py * ty, cy + px * ty + py * tx)
+
+    A, B, C, D = P(-a, b), P(a, b), P(a, -b), P(-a, -b)
+    return {
+        "layer": "holes", "closed": True, "shape": "loop",
+        "segments": [("line", A, B), ("line", B, C),
+                     ("line", C, D), ("line", D, A)],
+    }
+
+
+# G codes that suppress the hit on their own block:
+#   G26/G28/G36 pattern macros (the X/Y positions the pattern origin),
+#   G70/G72 position-without-punch, G92 coordinate preset, G50 home/end.
+_PUNCH_NO_HIT_G = {26, 28, 36, 50, 70, 72, 92}
+# Handled or harmless-by-design; everything else earns one "ignored" warning.
+_PUNCH_KNOWN_G = _PUNCH_NO_HIT_G | {4, 5, 6, 8, 9, 17, 20, 21, 25, 27,
+                                    90, 91, 93, 98}
+_PUNCH_SILENT_M = {0, 1, 2, 6, 30}
+
+
 def _parse_punch(text: str, result: ImportResult) -> ImportResult:
+    """Turret punch dialect (Screenwall combo exports and Amada-style tapes).
+
+    Hits are bare X/Y blocks (T word optional, attached or space-separated;
+    X or Y alone is modal). Pattern macros expand to hits:
+      G36 I<xp> P<nx> J<yp> K<ny>  grid from the last position (origin is
+                                   skipped when it was already punched)
+      G28 I<pitch> J<angle> K<n>   line of n extra hits from the last position
+      G26 I<r> J<start> K<n>       bolt-hole circle centered on the current
+                                   position (center is never punched)
+    Tool geometry comes from Screenwall tool-table comments or, for foreign
+    tapes, the SET-UP SHEET tool list after the closing '%'."""
     result.dialect = "punch"
+    program, trailer = _split_tape(text)
     tools: dict[str, tuple] = {}
     for m in _PUNCH_RD_RE.finditer(text):
         tools[f"T{int(m.group(1)):02d}"] = ("RD", float(m.group(2)))
     for m in _PUNCH_OB_RE.finditer(text):
         tools[f"T{int(m.group(1)):02d}"] = (
             "OB", float(m.group(2)), float(m.group(3)), float(m.group(4)))
-    scale = 1.0 / 25.4 if re.search(r"\bG21\b", text) else 1.0
-    current = None
-    for raw in text.splitlines():
+    result.annotated = bool(tools)  # Screenwall comment table = lossless
+    for key, tool in _tools_from_setup_sheet(trailer).items():
+        tools.setdefault(key, tool)
+
+    scale = 1.0 / 25.4 if re.search(r"\bG21\b", program) else 1.0
+    x = y = 0.0
+    absolute = True
+    current: str | None = None
+    last_hit: tuple | None = None
+    unknown_tools: set = set()
+    ignored: set = set()
+    first_comment: str | None = None
+
+    def emit_hit(hx, hy):
+        nonlocal last_hit
+        tool = tools.get(current)
+        if current is None:
+            result.warnings.append(
+                f"hit at X{hx} Y{hy} before any known tool select; skipped")
+            return
+        if tool is None:
+            if current not in unknown_tools:
+                unknown_tools.add(current)
+                result.warnings.append(
+                    f"tool {current} has no geometry in the program or "
+                    f"set-up sheet; drawn as a 0.25\" round")
+            tool = ("RD", 0.25 / scale)
+        if tool[0] == "RD":
+            result.paths.append(_circle_path(hx, hy, tool[1] * scale))
+        elif tool[0] == "OB":
+            _, w, l, ang = tool
+            result.paths.append(_slot_path_from_hit(hx, hy, w * scale, l * scale, ang))
+        else:  # RECT
+            _, w, l, ang = tool
+            result.paths.append(_rect_path_from_hit(hx, hy, w * scale, l * scale, ang))
+        last_hit = (hx, hy)
+
+    for raw in program.splitlines():
         code, comments = _strip_comments(raw)
         for cm in comments:
             pm = _PANEL_RE.search(cm)
             if pm:
                 result.panel_id = pm.group(1)
-        m = re.match(r"\s*X([-\d.]+)\s*Y([-\d.]+)(?:\s+T(\d+))?\s*$", code)
-        if not m:
+            elif first_comment is None and cm:
+                first_comment = cm
+        words = _WORD_RE.findall(code)
+        if not words:
             continue
-        if m.group(3):
-            current = f"T{int(m.group(3)):02d}"
-        x, y = float(m.group(1)) * scale, float(m.group(2)) * scale
-        tool = tools.get(current)
-        if tool is None:
-            result.warnings.append(f"hit at X{x} Y{y} before any known tool select; skipped")
-            continue
-        if tool[0] == "RD":
-            result.paths.append(_circle_path(x, y, tool[1] * scale))
-        else:
-            _, w, l, ang = tool
-            result.paths.append(_slot_path_from_hit(x, y, w * scale, l * scale, ang))
-    result.annotated = bool(tools)
+        gs: list[int] = []
+        vals: dict[str, float] = {}
+        for letter, num in words:
+            L = letter.upper()
+            if L == "G":
+                gs.append(int(round(float(num))))
+            elif L == "M":
+                mi = int(round(float(num)))
+                if mi not in _PUNCH_SILENT_M:
+                    ignored.add(f"M{mi}")
+            else:
+                vals[L] = float(num)
+        for gi in gs:
+            if gi == 90:
+                absolute = True
+            elif gi == 91:
+                absolute = False
+            elif gi == 20:
+                scale = 1.0
+            elif gi == 21:
+                scale = 1.0 / 25.4
+            elif gi not in _PUNCH_KNOWN_G:
+                ignored.add(f"G{gi}")
+        if "T" in vals:
+            current = f"T{int(vals['T']):02d}"
+        if "X" in vals:
+            x = vals["X"] * scale if absolute else x + vals["X"] * scale
+        if "Y" in vals:
+            y = vals["Y"] * scale if absolute else y + vals["Y"] * scale
+
+        if ("X" in vals or "Y" in vals) and not any(g in _PUNCH_NO_HIT_G for g in gs):
+            emit_hit(x, y)
+
+        pattern = next((gi for gi in gs if gi in (26, 28, 36)), None)
+        if pattern == 36:
+            ip = vals.get("I", 0.0) * scale
+            jp = vals.get("J", 0.0) * scale
+            p = max(int(round(vals.get("P", 0.0))), 0)
+            k = max(int(round(vals.get("K", 0.0))), 0)
+            bx, by = x, y
+            origin_punched = (last_hit is not None
+                              and math.hypot(last_hit[0] - bx, last_hit[1] - by) < _EPS)
+            for jj in range(k + 1):
+                for ii in range(p + 1):
+                    if ii == 0 and jj == 0 and origin_punched:
+                        continue
+                    emit_hit(bx + ii * ip, by + jj * jp)
+            x, y = bx + p * ip, by + k * jp
+        elif pattern == 28:
+            pitch = vals.get("I", 0.0) * scale
+            ang = math.radians(vals.get("J", 0.0))
+            k = max(int(round(vals.get("K", 0.0))), 0)
+            bx, by = x, y
+            for i in range(1, k + 1):
+                emit_hit(bx + i * pitch * math.cos(ang),
+                         by + i * pitch * math.sin(ang))
+            x, y = bx + k * pitch * math.cos(ang), by + k * pitch * math.sin(ang)
+        elif pattern == 26:
+            r = vals.get("I", 0.0) * scale
+            a0 = math.radians(vals.get("J", 0.0))
+            k = max(int(round(vals.get("K", 0.0))), 0)
+            cx0, cy0 = x, y
+            for i in range(k):
+                a = a0 + 2.0 * math.pi * i / max(k, 1)
+                emit_hit(cx0 + r * math.cos(a), cy0 + r * math.sin(a))
+
+    if result.panel_id is None and first_comment:
+        result.panel_id = first_comment
+    if ignored:
+        result.warnings.append(
+            "ignored non-geometry codes: " + ", ".join(sorted(ignored)))
     return result
 
 
