@@ -16,6 +16,7 @@ from screenwall_generator import (
     build_panel_document,
 )
 from gcode_export import GCodeConfig, doc_to_gcode, doc_to_gcode_combo
+from sample_data import TEMPLATE_CSV, build_sample_files, zip_files
 
 st.set_page_config(page_title="Screenwall Makr Beta", layout="wide")
 LOGO_PATH = Path(__file__).parent / "assets" / "artform_logo.png"
@@ -24,6 +25,21 @@ APP_DISPLAY_VERSION = f"Beta v{APP_VERSION} · {APP_RELEASE_LABEL} · {APP_RELEA
 
 def _inline_image_base64(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
+
+
+def _nc_preview(data: bytes, max_lines: int = 36) -> str:
+    lines = data.decode("ascii").splitlines()
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return "\n".join(lines[:max_lines]) + (
+        f"\n... (+{len(lines) - max_lines} more lines - full file in the ZIP download)"
+    )
+
+
+@st.cache_data(show_spinner=False)
+def _sample_bundle():
+    spec, files = build_sample_files()
+    return spec, files, zip_files(files)
 
 
 def _zip_outputs(folder: str) -> bytes:
@@ -36,87 +52,8 @@ def _zip_outputs(folder: str) -> bytes:
     return mem.read()
 
 
-# ---------------------------------------------------------------------------
-# CSV template
-# ---------------------------------------------------------------------------
-STANDARD_HEADERS = [
-    "panel_id", "width", "height", "thickness", "material", "alloy",
-    "flange_code", "flange1_depth", "flange2_depth",
-    "hole_diameter", "hole_pitch", "pattern", "fastening_pair",
-    "fastener_dia", "slot_length",
-    "stagger_angle", "margin",
-    "shop_flat_mode",
-]
-
-MIX_EXTRA_HEADERS = [
-    "top_type", "top_f1", "top_f2",
-    "bottom_type", "bottom_f1", "bottom_f2",
-    "left_type", "left_f1", "left_f2",
-    "right_type", "right_f1", "right_f2",
-]
-
-RT_EXTRA_HEADERS = [
-    "rt_opposing_edge",
-    "rt_leg_left",
-    "rt_leg_right",
-]
-
-STANDARD_EXAMPLE = [
-    "example_L4S", "36", "24", "0.1875", "aluminum", "3003",
-    "L4S", "2.0", "",
-    "0.75", "1.25", "staggered", "tb", "0.1875", "",
-    "60.0", "1.25",
-    "auto",
-    "", "", "", "", "", "", "", "", "", "", "", "",
-    "", "", "",
-]
-
-MIX_EXAMPLE = [
-    "example_MIX", "36", "24", "0.1875", "aluminum", "5052",
-    "MIX", "", "",
-    "0.75", "1.25", "staggered", "tb", "0.1875", "",
-    "60.0", "1.25",
-    "auto",
-    "J", "2.0", "2.25",   # top
-    "J", "2.0", "2.25",   # bottom
-    "L", "2.0", "",       # left
-    "L", "2.0", "",       # right
-    "", "", "",
-]
-
-# Steel example: thickness given as a gauge string ("14 ga"). material=steel is
-# now enough to drive BOTH gauge decoding and bend-rule lookup to the steel row.
-# alloy may still be set to "steel" (or a shop-specific steel descriptor) for
-# clarity in exported summaries and CSV review.
-STEEL_EXAMPLE = [
-    "example_STEEL", "36", "24", "14 ga", "steel", "steel",
-    "L4S", "2.0", "",
-    "0.75", "1.25", "staggered", "tb", "0.1875", "0.75",
-    "60.0", "1.25",
-    "auto",
-    "", "", "", "", "", "", "", "", "", "", "", "",
-    "", "", "",
-]
-
-RT_EXAMPLE = [
-    "example_RT4S", "36", "26", "0.1875", "aluminum", "3003",
-    "RT4S", "2.0", "",
-    "0.75", "1.25", "staggered", "tb", "0.1875", "",
-    "60.0", "1.25",
-    "auto",
-    "", "", "", "", "", "", "", "", "", "", "", "",
-    "top", "24", "30",
-]
-
-ALL_HEADERS = STANDARD_HEADERS + MIX_EXTRA_HEADERS + RT_EXTRA_HEADERS
-
-# Keep the downloadable template data-only. Spreadsheet apps can rewrite
-# comment-prefixed instruction rows in ways that break subsequent uploads.
-template_csv = ",".join(ALL_HEADERS) + "\n"
-template_csv += ",".join(STANDARD_EXAMPLE) + "\n"
-template_csv += ",".join(MIX_EXAMPLE) + "\n"
-template_csv += ",".join(STEEL_EXAMPLE) + "\n"
-template_csv += ",".join(RT_EXAMPLE) + "\n"
+# CSV template data lives in sample_data.py (shared with the built-in sample).
+template_csv = TEMPLATE_CSV
 
 # ---------------------------------------------------------------------------
 # UI
@@ -322,6 +259,66 @@ st.caption(
     "Populate the template and upload below. All dimensions in inches. Import guidance lives in the expanders above. "
     f"**DXF engine:** `{GENERATOR_ARTWORK_TAG}` · **Release:** `{APP_DISPLAY_VERSION}`"
 )
+
+if st.button("Show me a sample file"):
+    st.session_state["show_sample"] = True
+
+if st.session_state.get("show_sample"):
+    spec, sample_files, sample_zip = _sample_bundle()
+    n_holes = sum(
+        1 for line in sample_files[f"{spec.panel_id}_punch.nc"].decode("ascii").splitlines()
+        if line.startswith("X")
+    )
+    st.info(
+        f"Sample panel **`{spec.panel_id}`** — {spec.face_width}″ × {spec.face_height}″, "
+        f"{spec.thickness}″ {spec.material} {spec.alloy}, `{spec.flange_code}`, "
+        f"Ø{spec.hole_dia}″ holes @ {spec.pitch}″ {spec.pattern}, install slots top+bottom. "
+        f"Generated with the same engine as a CSV upload: the shop DXF, a single-machine "
+        f"laser program, and the punch + laser combo pair ({n_holes} punch hits)."
+    )
+    tab_laser, tab_punch, tab_combo_laser, tab_dxf = st.tabs([
+        f"{spec.panel_id}.nc — laser (all features)",
+        f"{spec.panel_id}_punch.nc — turret punch hits",
+        f"{spec.panel_id}_laser.nc — combo laser (etch + perimeter)",
+        f"{spec.panel_id}.dxf",
+    ])
+    with tab_laser:
+        st.caption(
+            "One machine does everything: panel-ID etch at mark power, then perforations, "
+            "install slots, and the blank perimeter last. Each path is annotated with "
+            "`(op=… layer=… shape=…)`."
+        )
+        st.code(_nc_preview(sample_files[f"{spec.panel_id}.nc"]), language="gcode")
+    with tab_punch:
+        st.caption(
+            "Two-machine combo, file 1: every perforation and install slot as a single punch "
+            "hit. The tool table in the header maps T numbers to round (RD) and obround (OB) "
+            "tools — remap to your turret stations."
+        )
+        st.code(_nc_preview(sample_files[f"{spec.panel_id}_punch.nc"]), language="gcode")
+    with tab_combo_laser:
+        st.caption(
+            "Two-machine combo, file 2: only the panel-ID etch and the perimeter cut remain "
+            "for the laser — the punched features are gone."
+        )
+        st.code(_nc_preview(sample_files[f"{spec.panel_id}_laser.nc"]), language="gcode")
+    with tab_dxf:
+        st.caption(
+            "The shop DXF (layers: cut / holes / fastening / bend / text / finished_face) is "
+            "binary — download the ZIP to open it in CAD/CAM."
+        )
+    dl_col, hide_col = st.columns([1.2, 5])
+    with dl_col:
+        st.download_button(
+            "⬇ Download sample (.zip)",
+            sample_zip,
+            "screenwall_sample.zip",
+            mime="application/zip",
+        )
+    with hide_col:
+        if st.button("Hide sample"):
+            st.session_state["show_sample"] = False
+            st.rerun()
 
 uploaded = st.file_uploader("Upload CSV", type=["csv"])
 
