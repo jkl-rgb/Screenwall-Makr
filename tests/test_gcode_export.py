@@ -8,7 +8,14 @@ import unittest
 import ezdxf
 
 from screenwall_generator import PanelSpec, build_panel_document, generate_panel_dxf
-from gcode_export import GCodeConfig, extract_paths, generate_panel_gcode, panel_gcode
+from gcode_export import (
+    GCodeConfig,
+    extract_paths,
+    generate_panel_gcode,
+    generate_panel_gcode_combo,
+    panel_gcode,
+    panel_gcode_combo,
+)
 
 
 def _spec(panel_id="UNIT_GC", flange_code="J4S", **kw):
@@ -160,5 +167,64 @@ class GcodeProgramTests(unittest.TestCase):
                 self.assertIn("G20 G90 G17", f.read())
 
 
+class ComboProgramTests(unittest.TestCase):
+    """Turret punch + laser combo: two separate programs for two machines."""
+
+    def test_returns_separate_punch_and_laser_programs(self):
+        programs = panel_gcode_combo(_spec(panel_id="UNIT_GC_COMBO"))
+        self.assertEqual(set(programs), {"punch", "laser"})
+
+    def test_punch_program_hits_match_hole_and_slot_counts(self):
+        s = _spec(panel_id="UNIT_GC_PUNCH")
+        doc = build_panel_document(s)
+        paths = extract_paths(doc)
+        n_holes = sum(1 for p in paths if p["layer"] == "holes")
+        n_slots = sum(1 for p in paths if p["layer"] == "fastening")
+        self.assertTrue(n_holes and n_slots)
+
+        punch = panel_gcode_combo(s)["punch"]
+        hits = re.findall(r"^X[-\d.]+ Y[-\d.]+", punch, flags=re.M)
+        self.assertEqual(len(hits), n_holes + n_slots)
+        # tool table lists a round tool for the holes, obround for the slots
+        self.assertIn("= RD 0.75", punch)
+        self.assertRegex(punch, r"= OB 0\.1875 x 0\.6875 @ (0|90)\.0 deg")
+        # one T word per tool, on the first hit of that tool
+        tools = re.findall(r"Y[-\d.]+ (T\d\d)$", punch, flags=re.M)
+        self.assertEqual(sorted(set(tools)), sorted(tools))
+        # no contour motion in a single-hit punch program
+        self.assertNotIn("G1 ", punch)
+        self.assertNotIn("G2 ", punch)
+        self.assertNotIn("G3 ", punch)
+        self.assertIn("G20 G90", punch)
+        self.assertTrue(punch.strip().endswith("%"))
+
+    def test_combo_laser_keeps_perimeter_and_marks_only(self):
+        laser = panel_gcode_combo(_spec(panel_id="UNIT_GC_CLASER"))["laser"]
+        order = [m.group(1) for m in re.finditer(r"\(op=\w+ layer=(\w+) ", laser)]
+        self.assertIn("text", order)
+        self.assertEqual(order[-1], "cut")
+        # punched features must not be laser-cut
+        self.assertNotIn("holes", order)
+        self.assertNotIn("fastening", order)
+        self.assertIn("M3 S", laser)  # laser dialect
+
+    def test_combo_writes_two_files(self):
+        s = _spec(panel_id="UNIT_GC_TWOFILES")
+        with tempfile.TemporaryDirectory() as d:
+            out = generate_panel_gcode_combo(s, d)
+            self.assertTrue(out["punch"].endswith("UNIT_GC_TWOFILES_punch.nc"))
+            self.assertTrue(out["laser"].endswith("UNIT_GC_TWOFILES_laser.nc"))
+            for path in out.values():
+                self.assertTrue(os.path.exists(path))
+
+    def test_rt_combo_slot_angles_are_axis_aligned_or_flagged(self):
+        punch = panel_gcode_combo(_rt_spec())["punch"]
+        for m in re.finditer(r"= OB [\d.]+ x [\d.]+ @ ([\d.]+) deg( \(auto-index)?", punch):
+            angle = float(m.group(1))
+            if angle not in (0.0, 90.0):
+                self.assertIsNotNone(m.group(2))
+
+
 if __name__ == "__main__":
     unittest.main()
+

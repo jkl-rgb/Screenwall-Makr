@@ -231,21 +231,190 @@ def _ordered_ops(cfg: GCodeConfig):
     return ops
 
 
-def doc_to_gcode(doc, panel_id: str, thickness: float, config: Optional[GCodeConfig] = None) -> str:
-    """Convert a built panel document (ezdxf) into a G-code program string."""
-    cfg = config or GCodeConfig()
-    paths = extract_paths(doc)
+def _emit_program(paths: list[dict], panel_id: str, thickness: float,
+                  cfg: GCodeConfig, layer_ops: list[tuple[str, str]]) -> str:
     by_layer: dict[str, list[dict]] = {}
     for p in paths:
         by_layer.setdefault(p["layer"], []).append(p)
-
     em = _Emitter(cfg, thickness)
     em.header(panel_id)
-    for layer, op in _ordered_ops(cfg):
+    for layer, op in layer_ops:
         for p in by_layer.get(layer, []):
             em.path(p, op)
     em.footer()
     return "\n".join(em.lines) + "\n"
+
+
+def doc_to_gcode(doc, panel_id: str, thickness: float, config: Optional[GCodeConfig] = None) -> str:
+    """Convert a built panel document (ezdxf) into a G-code program string."""
+    cfg = config or GCodeConfig()
+    return _emit_program(extract_paths(doc), panel_id, thickness, cfg, _ordered_ops(cfg))
+
+
+# ---------------------------------------------------------------------------
+# Turret punch + laser combo (two machines, two programs per panel)
+#
+# Punch program: perforations and install slots as single hits — round (RD)
+# tool per hole diameter, obround (OB) tool per slot width x length x angle.
+# T numbers are assigned in order of first use; the tool-table comment block
+# at the top is the operator's remap sheet for actual turret stations.
+# Laser program: panel-ID etch + blank perimeter (+ optional bend etch).
+# Any holes/fastening path a punch tool cannot represent falls back to the
+# laser program as a contour cut instead of being dropped.
+# ---------------------------------------------------------------------------
+PUNCH_LAYERS = ["holes", "fastening"]
+
+
+def _circle_params(path):
+    """(center, dia) for a two-half-arc circle path."""
+    arcs = [s for s in path["segments"] if s[0] == "arc"]
+    if len(arcs) != 2:
+        return None
+    c = arcs[0][3]
+    if math.hypot(arcs[1][3][0] - c[0], arcs[1][3][1] - c[1]) > 1e-9:
+        return None
+    r = math.hypot(arcs[0][1][0] - c[0], arcs[0][1][1] - c[1])
+    return c, 2.0 * r
+
+
+def _slot_params(path):
+    """(center, width, length, angle_deg) for a 2-line + 2-semicircle slot."""
+    arcs = [s for s in path["segments"] if s[0] == "arc"]
+    lines = [s for s in path["segments"] if s[0] == "line"]
+    if len(arcs) != 2 or len(lines) != 2:
+        return None
+    c0, c1 = arcs[0][3], arcs[1][3]
+    r0 = math.hypot(arcs[0][1][0] - c0[0], arcs[0][1][1] - c0[1])
+    r1 = math.hypot(arcs[1][1][0] - c1[0], arcs[1][1][1] - c1[1])
+    if abs(r0 - r1) > 1e-6:
+        return None
+    width = 2.0 * r0
+    dx, dy = c1[0] - c0[0], c1[1] - c0[1]
+    length = math.hypot(dx, dy) + width
+    center = ((c0[0] + c1[0]) / 2.0, (c0[1] + c1[1]) / 2.0)
+    angle = math.degrees(math.atan2(dy, dx)) % 180.0
+    return center, width, length, angle
+
+
+def _extract_punch_tools(paths):
+    """Split punchable hits from paths. Returns (tools, leftover_paths).
+
+    tools: list of {"key", "desc", "hits": [(x, y)]} in first-use order.
+    leftover_paths: holes/fastening paths no punch tool can represent.
+    """
+    tools: dict[tuple, dict] = {}
+    leftovers = []
+    for p in paths:
+        if p["layer"] not in PUNCH_LAYERS:
+            continue
+        if p["shape"] == "circle":
+            params = _circle_params(p)
+            if params is None:
+                leftovers.append(p)
+                continue
+            center, dia = params
+            key = ("RD", round(dia, 4))
+            desc = f"RD {dia:.4f}"
+        elif p["shape"] == "slot":
+            params = _slot_params(p)
+            if params is None:
+                leftovers.append(p)
+                continue
+            center, width, length, angle = params
+            key = ("OB", round(width, 4), round(length, 4), round(angle, 1))
+            desc = f"OB {width:.4f} x {length:.4f} @ {angle:.1f} deg"
+            if angle not in (0.0, 90.0):
+                desc += " (auto-index station required)"
+        else:
+            leftovers.append(p)
+            continue
+        tool = tools.setdefault(key, {"key": key, "desc": desc, "hits": []})
+        tool["hits"].append(center)
+    return list(tools.values()), leftovers
+
+
+def _serpentine(hits):
+    """Row-major hit order with alternating x direction to shorten travel."""
+    rows: dict[float, list] = {}
+    for x, y in hits:
+        rows.setdefault(round(y, 3), []).append((x, y))
+    ordered = []
+    for i, y in enumerate(sorted(rows)):
+        ordered.extend(sorted(rows[y], key=lambda h: h[0], reverse=bool(i % 2)))
+    return ordered
+
+
+def punch_program(paths, panel_id: str, config: Optional[GCodeConfig] = None) -> str:
+    """Fanuc/Amada-style single-hit turret punch program for punchable paths."""
+    cfg = config or GCodeConfig()
+    em = _Emitter(cfg, 0.0)
+    tools, _ = _extract_punch_tools(paths)
+
+    em.raw("%")
+    em.comment(f"Screenwall Makr v{APP_VERSION} turret punch program")
+    em.comment(f"panel={panel_id} units=inch machine=turret-punch")
+    em.comment("tool table - remap T numbers to your turret stations:")
+    for idx, tool in enumerate(tools, start=1):
+        em.comment(f"T{idx:02d} = {tool['desc']} ({len(tool['hits'])} hits)")
+    em.comment("datum: blank lower-left at X0 Y0, inside face up (same as DXF)")
+    em.raw("G20 G90")
+    for idx, tool in enumerate(tools, start=1):
+        em.comment(f"op=punch tool=T{idx:02d} {tool['desc']}")
+        first = True
+        for x, y in _serpentine(tool["hits"]):
+            t_word = f" T{idx:02d}" if first else ""
+            first = False
+            em.raw(f"X{em.n(x)} Y{em.n(y)}{t_word}")
+    em.raw(cfg.program_end)
+    em.raw("%")
+    return "\n".join(em.lines) + "\n"
+
+
+def _combo_laser_ops(cfg: GCodeConfig) -> list[tuple[str, str]]:
+    ops: list[tuple[str, str]] = []
+    if cfg.include_text_marks:
+        ops.extend((lay, "mark") for lay in MARK_LAYERS)
+    if cfg.include_bend_marks:
+        ops.extend((lay, "mark") for lay in OPTIONAL_MARK_LAYERS)
+    # Unpunchable holes/fastening leftovers cut before the perimeter.
+    ops.extend((lay, "cut") for lay in PUNCH_LAYERS)
+    ops.append(("cut", "cut"))
+    return ops
+
+
+def doc_to_gcode_combo(doc, panel_id: str, thickness: float,
+                       config: Optional[GCodeConfig] = None) -> dict:
+    """Two programs for a punch + laser cell: {"punch": …, "laser": …}.
+
+    Perforations and install slots go to the punch; the laser program keeps
+    only marks, the perimeter, and any feature the punch cannot represent.
+    """
+    cfg = config or GCodeConfig()
+    paths = extract_paths(doc)
+    _, leftovers = _extract_punch_tools(paths)
+    laser_paths = [p for p in paths if p["layer"] not in PUNCH_LAYERS] + leftovers
+    return {
+        "punch": punch_program(paths, panel_id, cfg),
+        "laser": _emit_program(laser_paths, panel_id, thickness, cfg, _combo_laser_ops(cfg)),
+    }
+
+
+def panel_gcode_combo(spec, config: Optional[GCodeConfig] = None) -> dict:
+    doc = build_panel_document(spec)
+    return doc_to_gcode_combo(doc, spec.panel_id, spec.thickness, config)
+
+
+def generate_panel_gcode_combo(spec, outdir: str, config: Optional[GCodeConfig] = None) -> dict:
+    """Write `{panel_id}_punch.nc` and `{panel_id}_laser.nc`. Returns paths."""
+    programs = panel_gcode_combo(spec, config)
+    os.makedirs(outdir, exist_ok=True)
+    out = {}
+    for machine, program in programs.items():
+        path = os.path.join(outdir, f"{spec.panel_id}_{machine}{NC_EXTENSION}")
+        with open(path, "w", encoding="ascii") as f:
+            f.write(program)
+        out[machine] = path
+    return out
 
 
 def panel_gcode(spec, config: Optional[GCodeConfig] = None) -> str:

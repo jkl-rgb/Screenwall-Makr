@@ -15,7 +15,7 @@ from screenwall_generator import (
     parse_csv,
     build_panel_document,
 )
-from gcode_export import GCodeConfig, doc_to_gcode
+from gcode_export import GCodeConfig, doc_to_gcode, doc_to_gcode_combo
 
 st.set_page_config(page_title="Screenwall Makr Beta", layout="wide")
 LOGO_PATH = Path(__file__).parent / "assets" / "artform_logo.png"
@@ -356,20 +356,33 @@ if uploaded is not None:
                 value=False,
             )
             gcode_config = None
+            gcode_combo = False
             if want_gcode:
                 with st.expander("G-code options", expanded=False):
                     st.caption(
                         "Generic RS-274 2D cut program: panel-ID etch first, then perforations "
                         "and install slots, blank perimeter last. `finished_face` is never machined; "
                         "bend centerlines are reference only unless etched below. Post-check feeds/"
-                        "power against your controller before running."
+                        "power against your controller before running. "
+                        "**Punch + laser combo** writes two files per panel for two machines: "
+                        "`_punch.nc` (perforations + install slots as single hits, tool table in the "
+                        "header for turret-station remap) and `_laser.nc` (panel-ID etch + perimeter)."
                     )
                     mode_label = st.radio(
                         "Machine style",
-                        ["Laser / plasma (M3–M5 head)", "Router / mill (Z plunge)"],
+                        [
+                            "Laser / plasma (M3–M5 head)",
+                            "Router / mill (Z plunge)",
+                            "Turret punch + laser combo (two files per panel)",
+                        ],
                         horizontal=True,
                     )
-                    mode = "laser" if mode_label.startswith("Laser") else "mill"
+                    if mode_label.startswith("Turret"):
+                        mode = "combo"
+                    elif mode_label.startswith("Laser"):
+                        mode = "laser"
+                    else:
+                        mode = "mill"
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         feed_cut = st.number_input("Cut feed (in/min)", value=60.0, min_value=1.0)
@@ -377,8 +390,9 @@ if uploaded is not None:
                         feed_mark = st.number_input("Mark feed (in/min)", value=120.0, min_value=1.0)
                     with c3:
                         etch_bend = st.checkbox("Etch bend centerlines", value=False)
+                    gcode_combo = mode == "combo"
                     gcode_config = GCodeConfig(
-                        mode=mode,
+                        mode="laser" if gcode_combo else mode,
                         feed_cut=feed_cut,
                         feed_mark=feed_mark,
                         include_bend_marks=etch_bend,
@@ -391,7 +405,11 @@ if uploaded is not None:
                     try:
                         doc = build_panel_document(panel)
                         doc.saveas(str(Path(d) / f"{panel.panel_id}.dxf"))
-                        if want_gcode:
+                        if want_gcode and gcode_combo:
+                            programs = doc_to_gcode_combo(doc, panel.panel_id, panel.thickness, gcode_config)
+                            for machine, program in programs.items():
+                                (Path(d) / f"{panel.panel_id}_{machine}.nc").write_text(program, encoding="ascii")
+                        elif want_gcode:
                             program = doc_to_gcode(doc, panel.panel_id, panel.thickness, gcode_config)
                             (Path(d) / f"{panel.panel_id}.nc").write_text(program, encoding="ascii")
                     except Exception as e:
