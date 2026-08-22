@@ -2474,7 +2474,13 @@ def _draw_corner_reliefs(msp, fx0, fy0, fx1, fy1, blank_w, blank_h, sides, r, t,
 # ---------------------------------------------------------------------------
 # Main DXF generator
 # ---------------------------------------------------------------------------
-def generate_panel_dxf(spec, outdir):
+def build_panel_document(spec):
+    """Build the panel drawing as an in-memory ezdxf document.
+
+    Shared geometry source for the DXF writer (`generate_panel_dxf`) and the
+    G-code exporter (`gcode_export`). Layers: cut / holes / fastening / bend /
+    text / finished_face.
+    """
     rules = get_rules(spec)
     r, k, t = rules["r"], rules["k"], spec.thickness
     bd = _bd(r, k, t)
@@ -2529,9 +2535,7 @@ def generate_panel_dxf(spec, outdir):
             doc, msp, spec, sides, ff_dict, face_holes,
             fx0, min_ffy, face_w, ff_face_h, bw, bh, bd, lay=lay, ffc=ffc,
         )
-        os.makedirs(outdir, exist_ok=True)
-        doc.saveas(os.path.join(outdir, f"{spec.panel_id}.dxf"))
-        return
+        return doc
 
     bw, bh = flat_size(spec)
     ffx0, ffy0, ffx1, ffy1 = _nominal_finished_face_rect_xy(bw, bh, sides)
@@ -2557,9 +2561,13 @@ def generate_panel_dxf(spec, outdir):
 
     _draw_fastening_slots(msp, spec, ffx0, ffy0, ffx1, ffy1, face_w, face_h, sides, bw, bh, bd)
     _draw_panel_id_text(doc, msp, spec, sides, ff_edge, face_holes, ffx0, ffy0, face_w, face_h, bw, bh, bd)
+    return doc
 
-    os.makedirs(outdir,exist_ok=True)
-    doc.saveas(os.path.join(outdir,f"{spec.panel_id}.dxf"))
+
+def generate_panel_dxf(spec, outdir):
+    doc = build_panel_document(spec)
+    os.makedirs(outdir, exist_ok=True)
+    doc.saveas(os.path.join(outdir, f"{spec.panel_id}.dxf"))
 
 
 def nest_panels(panels,sw,sh): return []

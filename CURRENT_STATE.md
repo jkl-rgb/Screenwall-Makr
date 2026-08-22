@@ -13,7 +13,8 @@ This file is the short handoff for future work. If it conflicts with older prose
 - **Beta v0.1.0 — First Draft** is the current team-testing release. Streamlit shows **Beta** in the title and `Beta v0.1.0 · Beta — First Draft · 2026-05-15` under the header (`APP_VERSION` / `APP_RELEASE_LABEL` in `screenwall_generator.py`).
 - **Primary shop geometry is in good shape:** blank sizing, developed flats (`shop_flat_mode` auto), **`bend`** artwork, **`cut`** perimeter (CI vs BD), J install-slot shop rules, J+J miter-safe slot stations, RT panel ID on the **parallel** flange.
 - **Batch CSV:** no coded row limit; ~150 panels ≈ 30 s locally. Use **unique `panel_id`** per row or the ZIP will contain one file per ID (last row wins). Very large batches may hit Streamlit Cloud memory/time when building the in-memory ZIP.
-- **Next engineering (post-beta):** nesting / sheet layout; duplicate-ID warnings; optional batch progress UI.
+- **G-code export:** optional `.nc` per panel (`gcode_export.py`) from the same in-memory drawing as the DXF (`build_panel_document`). Laser (M3/M5) or mill (Z-plunge) dialect; panel-ID etch → holes → slots → perimeter last; `finished_face`/`bend` reference-only (bend etch opt-in). Paths carry `(op=… layer=… shape=…)` comments for round-trip.
+- **Next engineering (post-beta):** G-code **import** (see `GCODE_IMPORT_PLAN.md`); nesting / sheet layout; duplicate-ID warnings; optional batch progress UI.
 
 ---
 
