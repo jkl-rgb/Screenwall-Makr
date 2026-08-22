@@ -13,8 +13,9 @@ from screenwall_generator import (
     GENERATOR_ARTWORK_TAG,
     INSTALL_SLOT_EXTRA,
     parse_csv,
-    generate_panel_dxf,
+    build_panel_document,
 )
+from gcode_export import GCodeConfig, doc_to_gcode
 
 st.set_page_config(page_title="Screenwall Makr Beta", layout="wide")
 LOGO_PATH = Path(__file__).parent / "assets" / "artform_logo.png"
@@ -25,11 +26,12 @@ def _inline_image_base64(path: Path) -> str:
     return base64.b64encode(path.read_bytes()).decode("ascii")
 
 
-def _zip_dxfs(folder: str) -> bytes:
+def _zip_outputs(folder: str) -> bytes:
     mem = io.BytesIO()
     with zipfile.ZipFile(mem, "w", zipfile.ZIP_DEFLATED) as z:
-        for f in Path(folder).glob("*.dxf"):
-            z.write(f, f.name)
+        for pattern in ("*.dxf", "*.nc"):
+            for f in sorted(Path(folder).glob(pattern)):
+                z.write(f, f.name)
     mem.seek(0)
     return mem.read()
 
@@ -349,20 +351,58 @@ if uploaded is not None:
                 })
             st.dataframe(summary, use_container_width=True)
 
-            if st.button("Generate DXFs", type="primary"):
+            want_gcode = st.checkbox(
+                "Also export G-code (.nc) — one program per panel, same geometry as the DXF",
+                value=False,
+            )
+            gcode_config = None
+            if want_gcode:
+                with st.expander("G-code options", expanded=False):
+                    st.caption(
+                        "Generic RS-274 2D cut program: panel-ID etch first, then perforations "
+                        "and install slots, blank perimeter last. `finished_face` is never machined; "
+                        "bend centerlines are reference only unless etched below. Post-check feeds/"
+                        "power against your controller before running."
+                    )
+                    mode_label = st.radio(
+                        "Machine style",
+                        ["Laser / plasma (M3–M5 head)", "Router / mill (Z plunge)"],
+                        horizontal=True,
+                    )
+                    mode = "laser" if mode_label.startswith("Laser") else "mill"
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        feed_cut = st.number_input("Cut feed (in/min)", value=60.0, min_value=1.0)
+                    with c2:
+                        feed_mark = st.number_input("Mark feed (in/min)", value=120.0, min_value=1.0)
+                    with c3:
+                        etch_bend = st.checkbox("Etch bend centerlines", value=False)
+                    gcode_config = GCodeConfig(
+                        mode=mode,
+                        feed_cut=feed_cut,
+                        feed_mark=feed_mark,
+                        include_bend_marks=etch_bend,
+                    )
+
+            button_label = "Generate DXFs + G-code" if want_gcode else "Generate DXFs"
+            if st.button(button_label, type="primary"):
                 errors = []
                 for panel in panels:
                     try:
-                        generate_panel_dxf(panel, d)
+                        doc = build_panel_document(panel)
+                        doc.saveas(str(Path(d) / f"{panel.panel_id}.dxf"))
+                        if want_gcode:
+                            program = doc_to_gcode(doc, panel.panel_id, panel.thickness, gcode_config)
+                            (Path(d) / f"{panel.panel_id}.nc").write_text(program, encoding="ascii")
                     except Exception as e:
                         errors.append(f"{panel.panel_id}: {e}")
                 if errors:
                     for err in errors:
                         st.error(err)
                 else:
-                    z = _zip_dxfs(d)
+                    z = _zip_outputs(d)
                     st.download_button(
-                        "⬇ Download DXFs (.zip)",
+                        "⬇ Download panels (.zip)",
                         z,
                         "screenwall_panels.zip",
                         mime="application/zip",
