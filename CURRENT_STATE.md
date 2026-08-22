@@ -14,6 +14,7 @@ This file is the short handoff for future work. If it conflicts with older prose
 - **Primary shop geometry is in good shape:** blank sizing, developed flats (`shop_flat_mode` auto), **`bend`** artwork, **`cut`** perimeter (CI vs BD), J install-slot shop rules, J+J miter-safe slot stations, RT panel ID on the **parallel** flange.
 - **Batch CSV:** no coded row limit; ~150 panels ≈ 30 s locally. Use **unique `panel_id`** per row or the ZIP will contain one file per ID (last row wins). Very large batches may hit Streamlit Cloud memory/time when building the in-memory ZIP.
 - **G-code export:** optional `.nc` per panel (`gcode_export.py`) from the same in-memory drawing as the DXF (`build_panel_document`). Laser (M3/M5) or mill (Z-plunge) dialect; panel-ID etch → holes → slots → perimeter last; `finished_face`/`bend` reference-only (bend etch opt-in). Paths carry `(op=… layer=… shape=…)` comments for round-trip.
+- **Punch + laser combo export:** third machine style writes **two files per panel** for two machines — `{id}_punch.nc` (holes + install slots as single hits; RD/OB tool table in header for turret-station remap; serpentine hit order) and `{id}_laser.nc` (panel-ID etch + perimeter). Unpunchable features fall back to the laser file.
 - **Next engineering (post-beta):** G-code **import** (see `GCODE_IMPORT_PLAN.md`); nesting / sheet layout; duplicate-ID warnings; optional batch progress UI.
 
 ---
