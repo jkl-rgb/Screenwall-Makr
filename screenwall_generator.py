@@ -91,7 +91,7 @@ APP_VERSION = "0.1.0"
 APP_RELEASE_LABEL = "Beta — First Draft"
 APP_RELEASE_DATE = "2026-05-15"
 # Shown in Streamlit so you can confirm the running app loaded this tree (not an older copy).
-GENERATOR_ARTWORK_TAG = "shop-RT-panelId-parallel-flange"
+GENERATOR_ARTWORK_TAG = "shop-corner-fold-gap-1to1"
 
 SHOP_FLAT_CALIBRATION_REF = {
     "ref_r": 0.0625,
@@ -109,6 +109,15 @@ SHOP_FLAT_CALIBRATION_REF = {
 # Section 6 / Section 9 corner-relief constants
 RELIEF_BUFFER     = 0.010  # tolerance buffer added to OSS face notch (machine-drift guard)
 MITER_GAP_DEFAULT = 0.0    # Section 9: 0 with back J-relief circle, ~1/32" without
+
+# Corner fold clearance (shop rule 2026-08): at every blank corner where two
+# active flanges meet, each flange end edge is inset by (gap/2) so the folded
+# edges clear each other by the full gap. Total gap scales 1:1 with material
+# thickness (3/16" total → 3/32" per side on 0.1875" 3003). Square-end edges
+# step back parallel to themselves (staircase at the hard corner); J+J miter
+# edges offset perpendicular so the folded lips keep a uniform gap. Override
+# per row with CSV column corner_gap_override (total gap, inches; 0 disables).
+CORNER_FOLD_GAP_RATIO = 1.0
                            # Use spec.gap_override to set explicitly (typical 0.015"–0.030")
 INSTALL_SLOT_EXTRA = 0.50  # slot length = fastener_dia + 0.50"
 # J-flange install slots: max center-to-center along flange (engineering); pick threshold when thinning.
@@ -208,6 +217,9 @@ class PanelSpec:
     k_factor_override: Optional[float] = None
     bend_radius_override: Optional[float] = None
     gap_override: Optional[float] = None
+    # Total corner fold gap (inches). None = CORNER_FOLD_GAP_RATIO * thickness;
+    # 0 disables the corner fold clearance entirely.
+    corner_gap_override: Optional[float] = None
     stagger_angle: float = 60.0
     margin: float = 1.25
     top_type: str = "L";    top_f1: float = 0.0;    top_f2: float = 0.0
@@ -421,6 +433,9 @@ def parse_csv(path):
             k_factor_override=_to_float(row.get("k_factor_override"), None) or None,
             bend_radius_override=_to_float(row.get("bend_radius_override"), None) or None,
             gap_override=_to_float(row.get("gap_override"), None) or None,
+            corner_gap_override=_to_optional_float(
+                _first_present(row, "corner_gap_override", "corner_fold_gap")
+            ),
             stagger_angle=_to_float(row.get("stagger_angle"), 60.0),
             margin=_to_float(row.get("margin"), 1.25),
             top_type=(row.get("top_type") or "L").strip().upper(),
@@ -976,6 +991,63 @@ def flat_size(spec):
 #   any side without miter : f1+f2+inset  (path runs straight to blank)
 # ---------------------------------------------------------------------------
 
+def _corner_fold_half(spec) -> float:
+    """Per-side corner fold inset (half the total corner gap) for this panel."""
+    if spec is None:
+        return 0.0
+    gap = spec.corner_gap_override
+    if gap is None:
+        gap = CORNER_FOLD_GAP_RATIO * float(spec.thickness)
+    return max(float(gap), 0.0) / 2.0
+
+
+def _fold_shift_vectors(u_h, u_v, fold_half):
+    """(s_h, s_v): translation of each flange end edge away from the shared corner.
+
+    u_h / u_v are the void-edge directions from the hard corner. Each side's
+    end edge moves perpendicular to itself, signed away from the other side,
+    so the removed strip is a uniform fold_half wide (also correct at RT skew
+    corners where the two end edges are not perpendicular to each other).
+    """
+    ph = (-u_h[1], u_h[0])
+    if _v2_dot(ph, u_v) > 0:
+        ph = (-ph[0], -ph[1])
+    pv = (-u_v[1], u_v[0])
+    if _v2_dot(pv, u_h) > 0:
+        pv = (-pv[0], -pv[1])
+    return ((ph[0] * fold_half, ph[1] * fold_half),
+            (pv[0] * fold_half, pv[1] * fold_half))
+
+
+def _fold_offset_miter(void_pt, blank_pt, void_dir, leg_origin, leg_dir, blank_dir, fold_half):
+    """Parallel-offset a J+J miter edge into its lip by fold_half.
+
+    void_dir points from the hard corner toward the cut-away void corner
+    (u_h + u_v); the miter offsets AWAY from it, i.e. into the lip material.
+    Returns (new_void_end, new_blank_end): the offset miter line re-intersected
+    with the (already fold-shifted) leg void line and with the blank edge, so
+    the folded lips keep a uniform fold_half-per-side clearance along the miter.
+    """
+    m = _v2_norm(_v2_sub(blank_pt, void_pt))
+    n = (-m[1], m[0])
+    if _v2_dot(n, void_dir) > 0:
+        n = (-n[0], -n[1])
+    origin = _v2_add(void_pt, _v2_scale(n, fold_half))
+    new_void = _line_intersect_inf(origin, m, leg_origin, leg_dir)
+    new_blank = _line_intersect_inf(origin, m, blank_pt, blank_dir)
+    return (new_void if new_void is not None else void_pt,
+            new_blank if new_blank is not None else blank_pt)
+
+
+def _fold_lip_trim(this_sd, other_sd, fold_half):
+    """Along-flange distance the outer lip loses at this corner to fold clearance."""
+    if fold_half <= 1e-9 or not this_sd.active or not other_sd.active:
+        return 0.0
+    if this_sd.ftype == "J" and other_sd.ftype == "J":
+        return fold_half * math.sqrt(2.0)  # 45-deg miter: blank end slides f*sqrt(2)
+    return fold_half
+
+
 def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, spec, rules, gap=0.0):
     """Build CCW blank outline polygon. See module docstring above for the
     per-corner miter rule and the resulting edge counts.
@@ -1023,9 +1095,11 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, spec, rules, ga
     fh1_tr, fh2_tr = _corner_params(st, sr);  fv1_tr, fv2_tr = _corner_params(sr, st)
     fh1_tl, fh2_tl = _corner_params(st, sl);  fv1_tl, fv2_tl = _corner_params(sl, st)
 
+    fold_half = _corner_fold_half(spec)
+
     def _corner(hsd, vsd, hc_x, hc_y, ox, oy, arrive_vert,
                 fh1, fh2, fv1, fv2, b1h, b1v):
-        """Corner point sequence AFTER the arriving primary point, in CCW order.
+        """(arrival_point, corner point sequence) in CCW order.
         h_J / v_J classify by 'miter present at this corner', not by side type:
         a J flange at a non-J+J corner is treated as L here (no miter, no
         bend2-step), which keeps the case dispatch unchanged.
@@ -1037,11 +1111,21 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, spec, rules, ga
         v_void  = (hc_x+ox*fv1,             hc_y)
         v_blank = (hc_x+ox*(fv1+fv2),       hc_y+(-oy)*fv2)
 
+        if arrive_vert:
+            arrive_pt = v_blank if vsd.active else hc
+        else:
+            arrive_pt = h_blank if hsd.active else hc
+
+        both_active = hsd.active and vsd.active
+        fold = fold_half if (both_active and fold_half > 1e-9
+                             and notch_size <= 1e-9) else 0.0
+
         # Section 9 anti-collision: at J+J corners only, pull the miter end
         # points away from hc by gap/2 along their void edges. v_blank /
         # h_blank stay on the blank edge so the miter angle shifts marginally
-        # while the apex of the V opens up by the requested gap.
-        if gap > 0 and fh2 > 0 and fv2 > 0:
+        # while the apex of the V opens up by the requested gap. Superseded by
+        # the corner fold clearance whenever that is active.
+        if gap > 0 and fh2 > 0 and fv2 > 0 and fold <= 0:
             half = gap / 2.0
             v_void = (v_void[0] + ox*half, v_void[1])
             h_void = (h_void[0],           h_void[1] + oy*half)
@@ -1101,56 +1185,71 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, spec, rules, ga
         v_J = vsd.active and fv2 > 0
         v_L = vsd.active and not v_J
 
+        if fold > 0:
+            # Corner fold clearance: both flange end edges step back fold
+            # from the hard corner (staircase through hc); miter edges offset
+            # perpendicular so folded lips keep a uniform 2*fold gap.
+            u_h = (0.0, float(oy))
+            u_v = (float(ox), 0.0)
+            void_dir = (float(ox), float(oy))
+            s_h, s_v = _fold_shift_vectors(u_h, u_v, fold)
+            if v_J:
+                v_void_f, v_blank_f = _fold_offset_miter(
+                    v_void, v_blank, void_dir, _v2_add(hc, s_v), u_v, (0.0, 1.0), fold)
+            else:
+                v_void_f, v_blank_f = _v2_add(v_void, s_v), _v2_add(v_blank, s_v)
+            if h_J:
+                h_void_f, h_blank_f = _fold_offset_miter(
+                    h_void, h_blank, void_dir, _v2_add(hc, s_h), u_h, (1.0, 0.0), fold)
+            else:
+                h_void_f, h_blank_f = _v2_add(h_void, s_h), _v2_add(h_blank, s_h)
+            if arrive_vert:
+                pre = [v_void_f] if v_J else []
+                suf = [h_void_f, h_blank_f] if h_J else [h_blank_f]
+                seq = [*pre, _v2_add(hc, s_v), hc, _v2_add(hc, s_h), *suf]
+                return v_blank_f, seq
+            pre = [h_void_f] if h_J else []
+            suf = [v_void_f, v_blank_f] if v_J else [v_blank_f]
+            seq = [*pre, _v2_add(hc, s_h), hc, _v2_add(hc, s_v), *suf]
+            return h_blank_f, seq
+
         if arrive_vert:
             # Arriving from vert (left/right), departing to horiz (bottom/top)
-            if not hsd.active and not vsd.active:  return []
+            if not hsd.active and not vsd.active:  return arrive_pt, []
             if hsd.active and not vsd.active:
-                return [hc, h_void, h_blank] if h_J else [hc, h_blank]
+                return arrive_pt, ([hc, h_void, h_blank] if h_J else [hc, h_blank])
             if not hsd.active and vsd.active:
-                return [v_void, hc] if v_J else [hc]
+                return arrive_pt, ([v_void, hc] if v_J else [hc])
             # Both active
             if notch_path:
                 prefix = [v_void] if v_J else []
                 suffix = [h_void, h_blank] if h_J else [h_blank]
-                return [*prefix, *notch_path, *suffix]
-            if v_J and h_J:   return [v_void, hc, h_void, h_blank]
-            if v_J and h_L:   return [v_void, hc, h_blank]
-            if v_L and h_J:   return [hc, h_void, h_blank]
-            return             [hc, h_blank]
+                return arrive_pt, [*prefix, *notch_path, *suffix]
+            if v_J and h_J:   return arrive_pt, [v_void, hc, h_void, h_blank]
+            if v_J and h_L:   return arrive_pt, [v_void, hc, h_blank]
+            if v_L and h_J:   return arrive_pt, [hc, h_void, h_blank]
+            return             arrive_pt, [hc, h_blank]
         else:
             # Arriving from horiz (bottom/top), departing to vert (left/right)
-            if not hsd.active and not vsd.active:  return []
+            if not hsd.active and not vsd.active:  return arrive_pt, []
             if hsd.active and not vsd.active:
-                return [h_void, hc] if h_J else [hc]
+                return arrive_pt, ([h_void, hc] if h_J else [hc])
             if not hsd.active and vsd.active:
-                return [hc, v_void, v_blank] if v_J else [hc, v_void]
+                return arrive_pt, ([hc, v_void, v_blank] if v_J else [hc, v_void])
             # Both active
             if notch_path:
                 prefix = [h_void] if h_J else []
                 suffix = [v_void, v_blank] if v_J else [v_void]
-                return [*prefix, *reversed(notch_path), *suffix]
-            if h_J and v_J:   return [h_void, hc, v_void, v_blank]
-            if h_J and v_L:   return [h_void, hc, v_void]
-            if h_L and v_J:   return [hc, v_void, v_blank]
-            return             [hc, v_void]
+                return arrive_pt, [*prefix, *reversed(notch_path), *suffix]
+            if h_J and v_J:   return arrive_pt, [h_void, hc, v_void, v_blank]
+            if h_J and v_L:   return arrive_pt, [h_void, hc, v_void]
+            if h_L and v_J:   return arrive_pt, [hc, v_void, v_blank]
+            return             arrive_pt, [hc, v_void]
 
-    bl = _corner(sb, sl, fx0, fy0, -1, -1, True,  fh1_bl, fh2_bl, fv1_bl, fv2_bl, bend1.get("bottom", fy0), bend1.get("left", fx0))
-    br = _corner(sb, sr, fx1, fy0, +1, -1, False, fh1_br, fh2_br, fv1_br, fv2_br, bend1.get("bottom", fy0), bend1.get("right", fx1))
-    tr = _corner(st, sr, fx1, fy1, +1, +1, True,  fh1_tr, fh2_tr, fv1_tr, fv2_tr, bend1.get("top", fy1), bend1.get("right", fx1))
-    tl = _corner(st, sl, fx0, fy1, -1, +1, False, fh1_tl, fh2_tl, fv1_tl, fv2_tl, bend1.get("top", fy1), bend1.get("left", fx0))
-
-    def _arr_vert(vsd, hc_x, hc_y, ox, oy, fv1, fv2):
-        if not vsd.active: return (hc_x, hc_y)
-        return (hc_x+ox*(fv1+fv2), hc_y+(-oy)*fv2)
-
-    def _arr_horiz(hsd, hc_x, hc_y, ox, oy, fh1, fh2):
-        if not hsd.active: return (hc_x, hc_y)
-        return (hc_x+(-ox)*fh2, hc_y+oy*(fh1+fh2))
-
-    bl_arr = _arr_vert (sl, fx0, fy0, -1, -1, fv1_bl, fv2_bl)
-    br_arr = _arr_horiz(sb, fx1, fy0, +1, -1, fh1_br, fh2_br)
-    tr_arr = _arr_vert (sr, fx1, fy1, +1, +1, fv1_tr, fv2_tr)
-    tl_arr = _arr_horiz(st, fx0, fy1, -1, +1, fh1_tl, fh2_tl)
+    bl_arr, bl = _corner(sb, sl, fx0, fy0, -1, -1, True,  fh1_bl, fh2_bl, fv1_bl, fv2_bl, bend1.get("bottom", fy0), bend1.get("left", fx0))
+    br_arr, br = _corner(sb, sr, fx1, fy0, +1, -1, False, fh1_br, fh2_br, fv1_br, fv2_br, bend1.get("bottom", fy0), bend1.get("right", fx1))
+    tr_arr, tr = _corner(st, sr, fx1, fy1, +1, +1, True,  fh1_tr, fh2_tr, fv1_tr, fv2_tr, bend1.get("top", fy1), bend1.get("right", fx1))
+    tl_arr, tl = _corner(st, sl, fx0, fy1, -1, +1, False, fh1_tl, fh2_tl, fv1_tl, fv2_tl, bend1.get("top", fy1), bend1.get("left", fx0))
 
     pts = []
     def _app(pt):
@@ -1214,8 +1313,12 @@ def _rt_corner_core(
     u_h, u_v,
     fh2_param, fv2_param,
     jj_ox, jj_oy,
+    arrival=None,
+    blank_dir_h=(1.0, 0.0), blank_dir_v=(0.0, 1.0),
+    fold_half=0.0,
 ):
-    """Void / miter / relief dispatch (jj_ox/jj_oy for J+J axis template when bends are orthogonal)."""
+    """(arrival_point, corner sequence): void / miter / relief dispatch
+    (jj_ox/jj_oy for J+J axis template when bends are orthogonal)."""
     C = _line_intersect_inf(b1h_p, b1h_t, b1v_p, b1v_t)
     if C is None:
         C = hc
@@ -1227,7 +1330,16 @@ def _rt_corner_core(
     v_J = vsd.active and fv2 > 1e-9
     v_L = vsd.active and not v_J
 
-    if gap > 0 and fh2 > 1e-9 and fv2 > 1e-9:
+    if arrival is None:
+        if arrive_vert:
+            arrival = v_blank if vsd.active else hc
+        else:
+            arrival = h_blank if hsd.active else hc
+
+    fold = fold_half if (hsd.active and vsd.active and fold_half > 1e-9
+                         and notch_size <= 1e-9) else 0.0
+
+    if gap > 0 and fh2 > 1e-9 and fv2 > 1e-9 and fold <= 0:
         halfg = gap / 2.0
         dh = _v2_sub(h_void, hc)
         dv = _v2_sub(v_void, hc)
@@ -1247,42 +1359,77 @@ def _rt_corner_core(
         else:
             notch_path = _skew_relief_notch_path(C, hc, b1h_t, b1v_t, half)
 
+    if fold > 0:
+        # Corner fold clearance (same rule as _corner in _blank_outline, in
+        # vector form so RT skew corners are handled uniformly).
+        s_h, s_v = _fold_shift_vectors(u_h, u_v, fold)
+        void_dir = _v2_add(u_h, u_v)
+        if arrive_vert:
+            if v_J:
+                v_void_f, arr_f = _fold_offset_miter(
+                    v_void, arrival, void_dir, _v2_add(hc, s_v), u_v, blank_dir_v, fold)
+                pre = [v_void_f]
+            else:
+                arr_f = _v2_add(arrival, s_v)
+                pre = []
+            if h_J:
+                h_void_f, h_blank_f = _fold_offset_miter(
+                    h_void, h_blank, void_dir, _v2_add(hc, s_h), u_h, blank_dir_h, fold)
+                suf = [h_void_f, h_blank_f]
+            else:
+                suf = [_v2_add(h_blank, s_h)]
+            return arr_f, [*pre, _v2_add(hc, s_v), hc, _v2_add(hc, s_h), *suf]
+        if h_J:
+            h_void_f, arr_f = _fold_offset_miter(
+                h_void, arrival, void_dir, _v2_add(hc, s_h), u_h, blank_dir_h, fold)
+            pre = [h_void_f]
+        else:
+            arr_f = _v2_add(arrival, s_h)
+            pre = []
+        if v_J:
+            v_void_f, v_blank_f = _fold_offset_miter(
+                v_void, v_blank, void_dir, _v2_add(hc, s_v), u_v, blank_dir_v, fold)
+            suf = [v_void_f, v_blank_f]
+        else:
+            suf = [_v2_add(v_blank, s_v)]
+        return arr_f, [*pre, _v2_add(hc, s_h), hc, _v2_add(hc, s_v), *suf]
+
     if arrive_vert:
         if not hsd.active and not vsd.active:
-            return []
+            return arrival, []
         if hsd.active and not vsd.active:
-            return [hc, h_void, h_blank] if h_J else [hc, h_blank]
+            return arrival, ([hc, h_void, h_blank] if h_J else [hc, h_blank])
         if not hsd.active and vsd.active:
-            return [v_void, hc] if v_J else [hc]
+            return arrival, ([v_void, hc] if v_J else [hc])
         if notch_path:
             prefix = [v_void] if v_J else []
             suffix = [h_void, h_blank] if h_J else [h_blank]
-            return [*prefix, *notch_path, *suffix]
+            return arrival, [*prefix, *notch_path, *suffix]
         if v_J and h_J:
-            return [v_void, hc, h_void, h_blank]
+            return arrival, [v_void, hc, h_void, h_blank]
         if v_J and h_L:
-            return [v_void, hc, h_blank]
+            return arrival, [v_void, hc, h_blank]
         if v_L and h_J:
-            return [hc, h_void, h_blank]
-        return [hc, h_blank]
+            return arrival, [hc, h_void, h_blank]
+        return arrival, [hc, h_blank]
     else:
         if not hsd.active and not vsd.active:
-            return []
+            return arrival, []
         if hsd.active and not vsd.active:
-            return [h_void, hc] if h_J else [hc]
+            return arrival, ([h_void, hc] if h_J else [hc])
         if not hsd.active and vsd.active:
-            return [hc, v_void, v_blank] if v_J else [hc, v_void]
+            return arrival, ([hc, v_void, v_blank] if v_J else [hc, v_void])
         if notch_path:
             prefix = [h_void] if h_J else []
             suffix = [v_void, v_blank] if v_J else [v_void]
-            return [*prefix, *list(reversed(notch_path)), *suffix]
+            return arrival, [*prefix, *list(reversed(notch_path)), *suffix]
         if h_J and v_J:
-            return [h_void, hc, v_void, v_blank]
+            return arrival, [h_void, hc, v_void, v_blank]
         if h_J and v_L:
-            return [h_void, hc, v_void]
+            return arrival, [h_void, hc, v_void]
         if h_L and v_J:
-            return [hc, v_void, v_blank]
-        return [hc, v_void]
+            return arrival, [hc, v_void, v_blank]
+        return arrival, [hc, v_void]
 
 
 def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, lay):
@@ -1291,6 +1438,7 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
     sl, sr, sb, st = sides["left"], sides["right"], sides["bottom"], sides["top"]
     centroid = _rt_face_centroid(bl, br, tr, tl)
     ci = SHOP_FLANGE_CORNER_INSET
+    fold_half = _corner_fold_half(spec)
 
     def _corner_params(this_sd, other_sd):
         if not this_sd.active:
@@ -1327,6 +1475,11 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
         b1_top_p = _v2_add(tl, _v2_scale(n_top_in, ba2))
         b1_top_t = t_top
 
+        bl_arr = (bl[0] + (-1) * (fv1_bl + fv2_bl), bl[1] + fv2_bl) if sl.active else bl
+        br_arr = (br[0] - fh2_br, br[1] - fh1_br - fh2_br) if sb.active else br
+        tr_arr = (tr[0] + fv1_tr + fv2_tr, tr[1] - fv2_tr) if sr.active else tr
+        tl_arr = _v2_add(tl, _v2_add(_v2_scale(n_top_out, fh1_tl + fh2_tl), _v2_scale(t_top, fh2_tl))) if st.active else tl
+
         def _corner_bl():
             hc = bl
             u_h, u_v = n_bot_out, (-1.0, 0.0)
@@ -1338,6 +1491,7 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
                 sb, sl, hc, True, h_void, h_blank, v_void, v_blank,
                 (fx0, bend_bottom_y), (1.0, 0.0), (bend_left_x, fy0), (0.0, 1.0),
                 notch_size, gap, u_h, u_v, fh2_bl, fv2_bl, -1, -1,
+                arrival=bl_arr, blank_dir_h=t_bot, fold_half=fold_half,
             )
 
         def _corner_br():
@@ -1351,6 +1505,7 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
                 sb, sr, hc, False, h_void, h_blank, v_void, v_blank,
                 (fx0, bend_bottom_y), (1.0, 0.0), (bend_right_x, fy0), (0.0, 1.0),
                 notch_size, gap, u_h, u_v, fh2_br, fv2_br, 1, -1,
+                arrival=br_arr, blank_dir_h=t_bot, fold_half=fold_half,
             )
 
         def _corner_tr():
@@ -1364,6 +1519,7 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
                 st, sr, hc, True, h_void, h_blank, v_void, v_blank,
                 b1_top_p, b1_top_t, (bend_right_x, br[1]), (0.0, 1.0),
                 notch_size, gap, u_h, u_v, fh2_tr, fv2_tr, None, None,
+                arrival=tr_arr, blank_dir_h=t_top, fold_half=fold_half,
             )
 
         def _corner_tl():
@@ -1377,17 +1533,25 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
                 st, sl, hc, False, h_void, h_blank, v_void, v_blank,
                 b1_top_p, b1_top_t, (bend_left_x, bl[1]), (0.0, 1.0),
                 notch_size, gap, u_h, u_v, fh2_tl, fv2_tl, None, None,
+                arrival=tl_arr, blank_dir_h=t_top, fold_half=fold_half,
             )
-
-        bl_arr = (bl[0] + (-1) * (fv1_bl + fv2_bl), bl[1] + fv2_bl) if sl.active else bl
-        br_arr = (br[0] - fh2_br, br[1] - fh1_br - fh2_br) if sb.active else br
-        tr_arr = (tr[0] + fv1_tr + fv2_tr, tr[1] - fv2_tr) if sr.active else tr
-        tl_arr = _v2_add(tl, _v2_add(_v2_scale(n_top_out, fh1_tl + fh2_tl), _v2_scale(t_top, fh2_tl))) if st.active else tl
 
     else:
         b1_bot_p = _v2_add(bl, _v2_scale(n_bot_in, ba2))
         b1_bot_t = t_bot
         bend_top_y = tr[1] + ba2
+
+        # Arrivals are the arriving side's blank-edge point at each corner:
+        # br arrives along the (angled) bottom edge, tr along the right edge.
+        # (Fixed 2026-08: br/tr previously used the departing side's formulas,
+        # which drew a stray diagonal through the corner void on RT-bottom.)
+        bl_arr = (bl[0] + (-1) * (fv1_bl + fv2_bl), bl[1] + fv2_bl) if sl.active else bl
+        br_arr = _v2_add(
+            _v2_add(br, _v2_scale(n_bot_out, fh1_br + fh2_br)),
+            _v2_scale(t_bot, -fh2_br),
+        ) if sb.active else br
+        tr_arr = (tr[0] + fv1_tr + fv2_tr, tr[1] - fv2_tr) if sr.active else tr
+        tl_arr = (tl[0] - fh2_tl, tl[1] + (fh1_tl + fh2_tl)) if st.active else tl
 
         def _corner_bl():
             hc = bl
@@ -1400,6 +1564,7 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
                 sb, sl, hc, True, h_void, h_blank, v_void, v_blank,
                 b1_bot_p, b1_bot_t, (bend_left_x, bl[1]), (0.0, 1.0),
                 notch_size, gap, u_h, u_v, fh2_bl, fv2_bl, None, None,
+                arrival=bl_arr, blank_dir_h=t_bot, fold_half=fold_half,
             )
 
         def _corner_br():
@@ -1413,6 +1578,7 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
                 sb, sr, hc, False, h_void, h_blank, v_void, v_blank,
                 b1_bot_p, b1_bot_t, (bend_right_x, br[1]), (0.0, 1.0),
                 notch_size, gap, u_h, u_v, fh2_br, fv2_br, None, None,
+                arrival=br_arr, blank_dir_h=t_bot, fold_half=fold_half,
             )
 
         def _corner_tr():
@@ -1426,6 +1592,7 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
                 st, sr, hc, True, h_void, h_blank, v_void, v_blank,
                 (fx0, bend_top_y), (1.0, 0.0), (bend_right_x, br[1]), (0.0, 1.0),
                 notch_size, gap, u_h, u_v, fh2_tr, fv2_tr, 1, 1,
+                arrival=tr_arr, blank_dir_h=t_top, fold_half=fold_half,
             )
 
         def _corner_tl():
@@ -1439,17 +1606,13 @@ def _blank_outline_rt(spec, blank_w, blank_h, sides, bd, ba2, notch_size, gap, l
                 st, sl, hc, False, h_void, h_blank, v_void, v_blank,
                 (fx0, bend_top_y), (1.0, 0.0), (bend_left_x, bl[1]), (0.0, 1.0),
                 notch_size, gap, u_h, u_v, fh2_tl, fv2_tl, -1, 1,
+                arrival=tl_arr, blank_dir_h=t_top, fold_half=fold_half,
             )
 
-        bl_arr = (bl[0] + (-1) * (fv1_bl + fv2_bl), bl[1] + fv2_bl) if sl.active else bl
-        br_arr = (br[0] + fv1_br + fv2_br, br[1] + fv2_br) if sr.active else br
-        tr_arr = (tr[0] + fh2_tr, tr[1] + (fh1_tr + fh2_tr)) if st.active else tr
-        tl_arr = (tl[0] - fh2_tl, tl[1] + (fh1_tl + fh2_tl)) if st.active else tl
-
-    bl_seq = _corner_bl()
-    br_seq = _corner_br()
-    tr_seq = _corner_tr()
-    tl_seq = _corner_tl()
+    bl_arr, bl_seq = _corner_bl()
+    br_arr, br_seq = _corner_br()
+    tr_arr, tr_seq = _corner_tr()
+    tl_arr, tl_seq = _corner_tl()
 
     pts = []
 
@@ -1712,18 +1875,22 @@ def _ortho_void_inner_xy(blank_w: float, blank_h: float, sides) -> tuple[float, 
     return el + ci, eb + ci, blank_w - er - ci, blank_h - et - ci
 
 
-def _jj_miter_trim_horizontal(sides, which: str) -> tuple[float, float]:
-    """Miter depth (fh2) along bottom or top at left/right void corners — same side as `which`."""
+def _jj_miter_trim_horizontal(sides, which: str, fold_half: float = 0.0) -> tuple[float, float]:
+    """Miter depth (fh2) along bottom or top at left/right void corners — same side as `which`.
+
+    fold_half adds the corner fold clearance loss (fold_half*sqrt(2) at J+J
+    miters, fold_half at square-end fold corners) so slots stay on the lip."""
     sb = sides["bottom"] if which == "bottom" else sides["top"]
     sl, sr = sides["left"], sides["right"]
     if not sb.active or sb.ftype != "J":
         return (0.0, 0.0)
     _, fh2_l = _jj_corner_void_and_miter_f2(sb, sl, SHOP_FLANGE_CORNER_INSET)
     _, fh2_r = _jj_corner_void_and_miter_f2(sb, sr, SHOP_FLANGE_CORNER_INSET)
-    return (fh2_l, fh2_r)
+    return (fh2_l + _fold_lip_trim(sb, sl, fold_half),
+            fh2_r + _fold_lip_trim(sb, sr, fold_half))
 
 
-def _jj_miter_trim_vertical(sides, which: str) -> tuple[float, float]:
+def _jj_miter_trim_vertical(sides, which: str, fold_half: float = 0.0) -> tuple[float, float]:
     """Miter depth (fv2) along left or right at bottom/top void corners."""
     sl = sides["left"] if which == "left" else sides["right"]
     sb, st = sides["bottom"], sides["top"]
@@ -1731,7 +1898,8 @@ def _jj_miter_trim_vertical(sides, which: str) -> tuple[float, float]:
         return (0.0, 0.0)
     _, fv2_b = _jj_corner_void_and_miter_f2(sl, sb, SHOP_FLANGE_CORNER_INSET)
     _, fv2_t = _jj_corner_void_and_miter_f2(sl, st, SHOP_FLANGE_CORNER_INSET)
-    return (fv2_b, fv2_t)
+    return (fv2_b + _fold_lip_trim(sl, sb, fold_half),
+            fv2_t + _fold_lip_trim(sl, st, fold_half))
 
 
 def _rt_j_miter_span_x_bottom_top(spec, lay, sides, side_name: str) -> tuple[float, float] | None:
@@ -1741,6 +1909,7 @@ def _rt_j_miter_span_x_bottom_top(spec, lay, sides, side_name: str) -> tuple[flo
     bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
     ci = SHOP_FLANGE_CORNER_INSET
     tol = 0.08
+    fold_half = _corner_fold_half(spec)
     if side_name == "bottom":
         sb = sides["bottom"]
         if not sb.active or sb.ftype != "J" or abs(bl[1] - br[1]) > tol:
@@ -1748,7 +1917,8 @@ def _rt_j_miter_span_x_bottom_top(spec, lay, sides, side_name: str) -> tuple[flo
         _, fh2_l = _jj_corner_void_and_miter_f2(sb, sides["left"], ci)
         _, fh2_r = _jj_corner_void_and_miter_f2(sb, sides["right"], ci)
         x0, x1 = min(bl[0], br[0]), max(bl[0], br[0])
-        return (x0 + fh2_l, x1 - fh2_r)
+        return (x0 + fh2_l + _fold_lip_trim(sb, sides["left"], fold_half),
+                x1 - fh2_r - _fold_lip_trim(sb, sides["right"], fold_half))
     if side_name == "top":
         st = sides["top"]
         if not st.active or st.ftype != "J" or abs(tl[1] - tr[1]) > tol:
@@ -1756,7 +1926,8 @@ def _rt_j_miter_span_x_bottom_top(spec, lay, sides, side_name: str) -> tuple[flo
         _, fh2_l = _jj_corner_void_and_miter_f2(st, sides["left"], ci)
         _, fh2_r = _jj_corner_void_and_miter_f2(st, sides["right"], ci)
         x0, x1 = min(tl[0], tr[0]), max(tl[0], tr[0])
-        return (x0 + fh2_l, x1 - fh2_r)
+        return (x0 + fh2_l + _fold_lip_trim(st, sides["left"], fold_half),
+                x1 - fh2_r - _fold_lip_trim(st, sides["right"], fold_half))
     return None
 
 
@@ -1767,6 +1938,7 @@ def _rt_j_miter_span_y_left_right(spec, lay, sides, side_name: str) -> tuple[flo
     bl, br, tr, tl = lay["bl"], lay["br"], lay["tr"], lay["tl"]
     ci = SHOP_FLANGE_CORNER_INSET
     tol = 0.08
+    fold_half = _corner_fold_half(spec)
     if side_name == "left":
         sl = sides["left"]
         if not sl.active or sl.ftype != "J" or abs(bl[0] - tl[0]) > tol:
@@ -1774,7 +1946,8 @@ def _rt_j_miter_span_y_left_right(spec, lay, sides, side_name: str) -> tuple[flo
         _, fv2_b = _jj_corner_void_and_miter_f2(sl, sides["bottom"], ci)
         _, fv2_t = _jj_corner_void_and_miter_f2(sl, sides["top"], ci)
         y0, y1 = min(bl[1], tl[1]), max(bl[1], tl[1])
-        return (y0 + fv2_b, y1 - fv2_t)
+        return (y0 + fv2_b + _fold_lip_trim(sl, sides["bottom"], fold_half),
+                y1 - fv2_t - _fold_lip_trim(sl, sides["top"], fold_half))
     if side_name == "right":
         sr = sides["right"]
         if not sr.active or sr.ftype != "J" or abs(br[0] - tr[0]) > tol:
@@ -1782,7 +1955,8 @@ def _rt_j_miter_span_y_left_right(spec, lay, sides, side_name: str) -> tuple[flo
         _, fv2_b = _jj_corner_void_and_miter_f2(sr, sides["bottom"], ci)
         _, fv2_t = _jj_corner_void_and_miter_f2(sr, sides["top"], ci)
         y0, y1 = min(br[1], tr[1]), max(br[1], tr[1])
-        return (y0 + fv2_b, y1 - fv2_t)
+        return (y0 + fv2_b + _fold_lip_trim(sr, sides["bottom"], fold_half),
+                y1 - fv2_t - _fold_lip_trim(sr, sides["top"], fold_half))
     return None
 
 
@@ -1865,6 +2039,7 @@ def _j_slot_stations_along_flange(
     """
     outer = _j_outer_face_holes(face_holes, side_name)
     pad = max(slot_len * 0.5, 0.0)
+    fold_half = _corner_fold_half(spec)
 
     span_rt: tuple[float, float] | None = None
     if spec is not None and lay is not None:
@@ -1878,7 +2053,7 @@ def _j_slot_stations_along_flange(
             lo, hi = span_rt[0] + pad, span_rt[1] - pad
         else:
             fx0, fy0, fx1, fy1 = _ortho_void_inner_xy(blank_w, blank_h, sides)
-            fh2_l, fh2_r = _jj_miter_trim_horizontal(sides, side_name)
+            fh2_l, fh2_r = _jj_miter_trim_horizontal(sides, side_name, fold_half)
             lo, hi = fx0 + fh2_l + pad, fx1 - fh2_r - pad
         if hi < lo - 1e-9:
             return []
@@ -1889,7 +2064,7 @@ def _j_slot_stations_along_flange(
         lo, hi = span_rt[0] + pad, span_rt[1] - pad
     else:
         fx0, fy0, fx1, fy1 = _ortho_void_inner_xy(blank_w, blank_h, sides)
-        fv2_b, fv2_t = _jj_miter_trim_vertical(sides, side_name)
+        fv2_b, fv2_t = _jj_miter_trim_vertical(sides, side_name, fold_half)
         lo, hi = fy0 + fv2_b + pad, fy1 - fv2_t - pad
     if hi < lo - 1e-9:
         return []

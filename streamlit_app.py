@@ -230,6 +230,12 @@ with st.expander("Flange code reference", expanded=False):
 - For `RT4S` / `RT4J`: set `rt_opposing_edge` to `top` or `bottom` (which parallel edge is straight in plan).
   Set `rt_leg_left` and `rt_leg_right` to the vertical face heights at the left and right hard corners
   (inches). `width` is still the parallel span between the vertical legs. Leave `rt_*` blank for other codes.
+- **Corner fold clearance:** at every blank corner where two flanges fold, each flange end edge is
+  inset **`thickness / 2`** (3/32″ per side on 3/16″ material → 3/16″ total gap after folding) so the
+  folded edges never clash. Square ends step back through the hard corner (staircase); **J+J** miter
+  edges offset perpendicular so the folded lips keep a uniform gap. Scales 1:1 with gauge for all
+  materials. Override per row with `corner_gap_override` (total gap in inches; `0` disables). Corners
+  where only one side has a flange are untouched.
 """)
 
 with st.expander("Beta testing notes (READ FIRST)", expanded=False):
