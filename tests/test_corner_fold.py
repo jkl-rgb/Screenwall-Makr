@@ -83,35 +83,37 @@ class GoldenParityTests(unittest.TestCase):
                 self.assertEqual(census(off), census(on))
 
 
-class StaircaseTests(unittest.TestCase):
-    """Square-end corners: both end edges step back t/2 through the hard corner."""
+class CleanCornerTests(unittest.TestCase):
+    """Square-end corners: both end edges step back t/2 and meet in a clean
+    90-deg inside corner (no material tooth at the old hard corner)."""
 
-    def test_l4s_bl_staircase(self):
+    def test_l4s_bl_clean_inside_corner(self):
         spec = _spec("G-L4S")
         f = spec.thickness / 2.0
         pts = _cut_outline(g.build_panel_document(spec))
         off = _cut_outline(g.build_panel_document(
             dataclasses.replace(spec, corner_gap_override=0.0)))
-        # legacy bl hard corner = min-x/min-y vertex of the fold-off outline
-        hcx = min(x for x, _ in off)
-        hcy = min(y for _, y in off)
-        hcx = min(x for x, y in off if x > 0.5)   # hard corner, not blank edge
+        # legacy bl hard corner = min-x/min-y interior vertex of fold-off
+        hcx = min(x for x, y in off if x > 0.5)
         hcy = min(y for x, y in off if y > 0.5)
-        for x, y in ((0.0, hcy + f), (hcx, hcy + f), (hcx, hcy),
-                     (hcx + f, hcy), (hcx + f, 0.0)):
+        # shifted end edges + single recessed inside corner
+        for x, y in ((0.0, hcy + f), (hcx + f, hcy + f), (hcx + f, 0.0)):
             self.assertTrue(_has_pt(pts, x, y), (x, y))
-        # legacy square corner points must be gone
+        # no tooth: the old hard corner and its staircase steps are gone
+        self.assertFalse(_has_pt(pts, hcx, hcy))
+        self.assertFalse(_has_pt(pts, hcx, hcy + f))
+        self.assertFalse(_has_pt(pts, hcx + f, hcy))
+        # legacy square corner points must be gone too
         self.assertFalse(_has_pt(pts, 0.0, hcy))
         self.assertFalse(_has_pt(pts, hcx, 0.0))
 
-    def test_all_four_corners_treated(self):
+    def test_point_count_matches_legacy(self):
         spec = _spec("G-L4S")
         pts = _cut_outline(g.build_panel_document(spec))
         off = _cut_outline(g.build_panel_document(
             dataclasses.replace(spec, corner_gap_override=0.0)))
-        # staircase inserts hc+s_v and hc+s_h at each both-active corner
-        # (arrival and departure points are replaced, not added): net +2
-        self.assertEqual(len(pts), len(off) + 4 * 2)
+        # [arrival, corner, departure] per corner, same as legacy [arr, hc, dep]
+        self.assertEqual(len(pts), len(off))
 
     def test_gap_scales_with_thickness(self):
         spec = dataclasses.replace(_spec("G-L4S"), thickness=0.125)
@@ -121,8 +123,8 @@ class StaircaseTests(unittest.TestCase):
             dataclasses.replace(spec, corner_gap_override=0.0)))
         hcx = min(x for x, y in off if x > 0.5)
         hcy = min(y for x, y in off if y > 0.5)
-        self.assertTrue(_has_pt(pts, hcx + f, hcy))
-        self.assertTrue(_has_pt(pts, hcx, hcy + f))
+        self.assertTrue(_has_pt(pts, hcx + f, hcy + f))
+        self.assertFalse(_has_pt(pts, hcx, hcy))
 
     def test_corner_gap_override_value(self):
         spec = dataclasses.replace(_spec("G-L4S"), corner_gap_override=0.5)
@@ -131,8 +133,7 @@ class StaircaseTests(unittest.TestCase):
             dataclasses.replace(spec, corner_gap_override=0.0)))
         hcx = min(x for x, y in off if x > 0.5)
         hcy = min(y for x, y in off if y > 0.5)
-        self.assertTrue(_has_pt(pts, hcx + 0.25, hcy))
-        self.assertTrue(_has_pt(pts, hcx, hcy + 0.25))
+        self.assertTrue(_has_pt(pts, hcx + 0.25, hcy + 0.25))
 
 
 class MiterOffsetTests(unittest.TestCase):
@@ -154,11 +155,10 @@ class MiterOffsetTests(unittest.TestCase):
         self.assertAlmostEqual(_line_dist(q, a, b), f, places=9)
         # lip shortens: blank endpoint slides f*sqrt(2) along the blank edge
         self.assertAlmostEqual(p[1] - a[1], f * math.sqrt(2.0), places=9)
-        # leg end edges step back too (staircase points at the hard corner)
+        # leg end edges step back and meet in one clean recessed corner
         hc = off[2]                       # legacy [v_blank, v_void, hc, ...]
-        self.assertTrue(_has_pt(on, hc[0], hc[1]))
-        self.assertTrue(_has_pt(on, hc[0], hc[1] + f))
-        self.assertTrue(_has_pt(on, hc[0] + f, hc[1]))
+        self.assertTrue(_has_pt(on, hc[0] + f, hc[1] + f))
+        self.assertFalse(_has_pt(on, hc[0], hc[1]))
 
     def test_rt4j_skew_miter_perpendicular_offset(self):
         spec = _spec("G-RT4J")           # rt_opposing_edge=bottom, angled edge
