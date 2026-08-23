@@ -114,9 +114,10 @@ MITER_GAP_DEFAULT = 0.0    # Section 9: 0 with back J-relief circle, ~1/32" with
 # active flanges meet, each flange end edge is inset by (gap/2) so the folded
 # edges clear each other by the full gap. Total gap scales 1:1 with material
 # thickness (3/16" total → 3/32" per side on 0.1875" 3003). Square-end edges
-# step back parallel to themselves (staircase at the hard corner); J+J miter
-# edges offset perpendicular so the folded lips keep a uniform gap. Override
-# per row with CSV column corner_gap_override (total gap, inches; 0 disables).
+# step back parallel to themselves and meet in a clean 90-deg inside corner
+# (no material tooth at the hard-corner datum); J+J miter edges offset
+# perpendicular so the folded lips keep a uniform gap. Override per row with
+# CSV column corner_gap_override (total gap, inches; 0 disables).
 CORNER_FOLD_GAP_RATIO = 1.0
                            # Use spec.gap_override to set explicitly (typical 0.015"–0.030")
 INSTALL_SLOT_EXTRA = 0.50  # slot length = fastener_dia + 0.50"
@@ -1187,12 +1188,14 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, spec, rules, ga
 
         if fold > 0:
             # Corner fold clearance: both flange end edges step back fold
-            # from the hard corner (staircase through hc); miter edges offset
-            # perpendicular so folded lips keep a uniform 2*fold gap.
+            # from the hard corner and meet at a clean 90-deg inside corner
+            # (no material tooth at hc); miter edges offset perpendicular so
+            # folded lips keep a uniform 2*fold gap.
             u_h = (0.0, float(oy))
             u_v = (float(ox), 0.0)
             void_dir = (float(ox), float(oy))
             s_h, s_v = _fold_shift_vectors(u_h, u_v, fold)
+            corner = _v2_add(hc, _v2_add(s_h, s_v))
             if v_J:
                 v_void_f, v_blank_f = _fold_offset_miter(
                     v_void, v_blank, void_dir, _v2_add(hc, s_v), u_v, (0.0, 1.0), fold)
@@ -1206,12 +1209,10 @@ def _blank_outline(blank_w, blank_h, sides, bd, ba2, notch_size, spec, rules, ga
             if arrive_vert:
                 pre = [v_void_f] if v_J else []
                 suf = [h_void_f, h_blank_f] if h_J else [h_blank_f]
-                seq = [*pre, _v2_add(hc, s_v), hc, _v2_add(hc, s_h), *suf]
-                return v_blank_f, seq
+                return v_blank_f, [*pre, corner, *suf]
             pre = [h_void_f] if h_J else []
             suf = [v_void_f, v_blank_f] if v_J else [v_blank_f]
-            seq = [*pre, _v2_add(hc, s_h), hc, _v2_add(hc, s_v), *suf]
-            return h_blank_f, seq
+            return h_blank_f, [*pre, corner, *suf]
 
         if arrive_vert:
             # Arriving from vert (left/right), departing to horiz (bottom/top)
@@ -1361,9 +1362,13 @@ def _rt_corner_core(
 
     if fold > 0:
         # Corner fold clearance (same rule as _corner in _blank_outline, in
-        # vector form so RT skew corners are handled uniformly).
+        # vector form so RT skew corners are handled uniformly). The shifted
+        # end-edge lines meet at a clean inside corner (no tooth at hc).
         s_h, s_v = _fold_shift_vectors(u_h, u_v, fold)
         void_dir = _v2_add(u_h, u_v)
+        corner = _line_intersect_inf(_v2_add(hc, s_v), u_v, _v2_add(hc, s_h), u_h)
+        if corner is None:
+            corner = _v2_add(hc, _v2_add(s_h, s_v))
         if arrive_vert:
             if v_J:
                 v_void_f, arr_f = _fold_offset_miter(
@@ -1378,7 +1383,7 @@ def _rt_corner_core(
                 suf = [h_void_f, h_blank_f]
             else:
                 suf = [_v2_add(h_blank, s_h)]
-            return arr_f, [*pre, _v2_add(hc, s_v), hc, _v2_add(hc, s_h), *suf]
+            return arr_f, [*pre, corner, *suf]
         if h_J:
             h_void_f, arr_f = _fold_offset_miter(
                 h_void, arrival, void_dir, _v2_add(hc, s_h), u_h, blank_dir_h, fold)
@@ -1392,7 +1397,7 @@ def _rt_corner_core(
             suf = [v_void_f, v_blank_f]
         else:
             suf = [_v2_add(v_blank, s_v)]
-        return arr_f, [*pre, _v2_add(hc, s_h), hc, _v2_add(hc, s_v), *suf]
+        return arr_f, [*pre, corner, *suf]
 
     if arrive_vert:
         if not hsd.active and not vsd.active:
