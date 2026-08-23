@@ -232,7 +232,7 @@ with st.expander("Flange code reference", expanded=False):
   (inches). `width` is still the parallel span between the vertical legs. Leave `rt_*` blank for other codes.
 - **Corner fold clearance:** at every blank corner where two flanges fold, each flange end edge is
   inset **`thickness / 2`** (3/32″ per side on 3/16″ material → 3/16″ total gap after folding) so the
-  folded edges never clash. Square ends step back through the hard corner (staircase); **J+J** miter
+  folded edges never clash. The recessed edges meet in a **clean 90° inside corner**; **J+J** miter
   edges offset perpendicular so the folded lips keep a uniform gap. Scales 1:1 with gauge for all
   materials. Override per row with `corner_gap_override` (total gap in inches; `0` disables). Corners
   where only one side has a flange are untouched.
