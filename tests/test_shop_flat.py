@@ -51,9 +51,26 @@ class ShopFlatCalibrationTests(unittest.TestCase):
         rules = get_rules(spec)
         f1 = _developed_leg_J(spec, 2.0, rules)
         f2 = _developed_lip_J(spec, 1.75, rules)
-        self.assertAlmostEqual(f1, 1.497, places=3)
-        self.assertAlmostEqual(f2, 1.582, places=3)
-        self.assertAlmostEqual(f1 + f2, 3.079, places=3)
+        # 78060 / WT-1.01 calibration: deduction 0.335 per bend at 3/16"
+        # (J leg 1.5x, lip 0.5x); J side hc->blank = 3.080 + 0.195 = 3.275
+        # vs 3.267 measured (F2 = 1-3/4).
+        self.assertAlmostEqual(f1, 2.0 - 1.5 * 0.335, places=6)
+        self.assertAlmostEqual(f2, 1.75 - 0.5 * 0.335, places=6)
+        self.assertAlmostEqual(f1 + f2, 3.080, places=3)
+
+    def test_alloy_does_not_shift_shop_flats(self):
+        """78060 evidence: 3003 artwork uses the same cut lines as 5052."""
+        for alloy in ("5052", "3003"):
+            spec = _spec(alloy=alloy)
+            rules = get_rules(spec)
+            self.assertAlmostEqual(
+                _developed_leg_L(spec, 2.0, rules), 1.665, places=6, msg=alloy)
+
+    def test_shop_deduction_scales_with_thickness(self):
+        spec = _spec(thickness=0.125)
+        rules = get_rules(spec)
+        expect = 2.0 - 0.335 * (0.125 / 0.1875)
+        self.assertAlmostEqual(_developed_leg_L(spec, 2.0, rules), expect, places=6)
 
     def test_f1_bend_inset_at_calibration_alloy(self):
         spec = _spec()

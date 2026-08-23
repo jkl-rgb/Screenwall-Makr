@@ -91,7 +91,7 @@ APP_VERSION = "0.1.0"
 APP_RELEASE_LABEL = "Beta — First Draft"
 APP_RELEASE_DATE = "2026-05-15"
 # Shown in Streamlit so you can confirm the running app loaded this tree (not an older copy).
-GENERATOR_ARTWORK_TAG = "shop-corner-fold-gap-1to1"
+GENERATOR_ARTWORK_TAG = "shop-78060-flat-calibration"
 
 SHOP_FLAT_CALIBRATION_REF = {
     "ref_r": 0.0625,
@@ -542,51 +542,32 @@ def _shop_flat_mode(spec: PanelSpec) -> str:
     return (getattr(spec, "shop_flat_mode", "auto") or "auto").strip().lower()
 
 
-def _shop_blend_ratio(
-    shop_ratio_at_ref: float,
-    F_ref: float,
-    theory_flat_fn,
-    r: float,
-    k: float,
-    t: float,
-) -> float:
-    """Blend shop cut-line / nominal ratio with relative bend-theory change vs ref (r,k,t)."""
-    ref = SHOP_FLAT_CALIBRATION_REF
-    rr, kr, tr = ref["ref_r"], ref["ref_k"], ref["ref_t"]
-    den = F_ref if abs(F_ref) > 1e-12 else 1.0
-    t_ref = theory_flat_fn(F_ref, rr, kr, tr) / den
-    t_now = theory_flat_fn(F_ref, r, k, t) / den
-    return shop_ratio_at_ref + (t_now - t_ref)
+# Shop bend deduction per 90-degree bend, calibrated 2026-08-23 against job
+# 78060 / WT-1.01 (2" L develops 1.665" = 1.860" from the hard inside corner
+# incl. the 0.195" corner datum; solving 0.335 = 2(r+t) - BA gives r = 1/8").
+# The same cut-line numbers hold for 5052 and 3003 at 3/16", so the deduction
+# is a CONSTANT per flange depth (not a ratio of nominal and not shifted by
+# the alloy's table radius), scaling 1:1 with material thickness.
+# Bookkeeping (face keeps full nominal): L leg loses 1.0x, J leg 1.5x,
+# J return lip 0.5x — the split verified in the original shop artwork.
+SHOP_BD_REF = 0.335
+SHOP_BD_REF_T = 0.1875
+
+
+def _shop_bd(thickness: float) -> float:
+    return SHOP_BD_REF * (thickness / SHOP_BD_REF_T)
 
 
 def _developed_leg_L(spec: PanelSpec, F1_nom: float, rules: dict) -> float:
     if _shop_flat_mode(spec) != "auto":
         return _flat_leg_L(F1_nom, rules["r"], rules["k"], spec.thickness)
-    ref = SHOP_FLAT_CALIBRATION_REF
-    rat = _shop_blend_ratio(
-        ref["L_flat_over_f1_od"],
-        ref["ref_f1_od"],
-        _flat_leg_L,
-        rules["r"],
-        rules["k"],
-        spec.thickness,
-    )
-    return max(F1_nom * rat, 0.0)
+    return max(F1_nom - _shop_bd(spec.thickness), 0.0)
 
 
 def _developed_leg_J(spec: PanelSpec, F1_nom: float, rules: dict) -> float:
     if _shop_flat_mode(spec) != "auto":
         return _flat_leg_J(F1_nom, rules["r"], rules["k"], spec.thickness)
-    ref = SHOP_FLAT_CALIBRATION_REF
-    rat = _shop_blend_ratio(
-        ref["J_f1_flat_over_f1_od"],
-        ref["ref_f1_od"],
-        _flat_leg_J,
-        rules["r"],
-        rules["k"],
-        spec.thickness,
-    )
-    return max(F1_nom * rat, 0.0)
+    return max(F1_nom - 1.5 * _shop_bd(spec.thickness), 0.0)
 
 
 def _developed_lip_J(spec: PanelSpec, F2_nom: float, rules: dict) -> float:
@@ -594,16 +575,7 @@ def _developed_lip_J(spec: PanelSpec, F2_nom: float, rules: dict) -> float:
         return 0.0
     if _shop_flat_mode(spec) != "auto":
         return _flat_lip(F2_nom, rules["r"], rules["k"], spec.thickness)
-    ref = SHOP_FLAT_CALIBRATION_REF
-    rat = _shop_blend_ratio(
-        ref["J_f2_flat_over_f2_od"],
-        ref["ref_f2_od"],
-        _flat_lip,
-        rules["r"],
-        rules["k"],
-        spec.thickness,
-    )
-    return max(F2_nom * rat, 0.0)
+    return max(F2_nom - 0.5 * _shop_bd(spec.thickness), 0.0)
 
 
 def _is_right_trapezoid(spec: PanelSpec) -> bool:
