@@ -494,6 +494,8 @@ for nc_file in nc_uploads or []:
         with st.expander(f"{nc_file.name} → `{panel_name}`", expanded=True):
             if not result.paths:
                 st.warning("No machinable paths found in this program.")
+                for w in summary["warnings"]:
+                    st.warning(w)
                 continue
             counts = ", ".join(f"{v} × `{k}`" for k, v in sorted(summary["paths_per_layer"].items()))
             st.markdown(
