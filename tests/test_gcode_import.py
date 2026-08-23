@@ -39,18 +39,28 @@ class RoundTripTests(unittest.TestCase):
     def test_laser_round_trip_hole_centers_match(self):
         spec = _spec(panel_id="UNIT_IMP_RT2")
         orig = {
-            (round(s[3][0], 3), round(s[3][1], 3))
+            (s[3][0], s[3][1])
             for p in extract_paths(build_panel_document(spec))
             if p["layer"] == "holes"
             for s in p["segments"]
         }
         imported = {
-            (round(s[3][0], 3), round(s[3][1], 3))
+            (s[3][0], s[3][1])
             for p in parse_gcode(panel_gcode(spec)).paths
             if p["layer"] == "holes"
             for s in p["segments"]
         }
-        self.assertEqual(orig, imported)
+        # Export writes 4-decimal coordinates, so match with tolerance instead
+        # of rounded-set equality (centers can sit exactly on .0005 boundaries
+        # and near-equal floats dedupe differently in each set).
+        def covered(pts, ref):
+            for px, py in pts:
+                self.assertTrue(
+                    any(abs(px - rx) < 6e-4 and abs(py - ry) < 6e-4 for rx, ry in ref),
+                    (px, py),
+                )
+        covered(imported, orig)
+        covered(orig, imported)
 
     def test_mill_dialect_round_trip(self):
         spec = _spec(panel_id="UNIT_IMP_MILL")

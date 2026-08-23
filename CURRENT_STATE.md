@@ -27,7 +27,7 @@ This file is the short handoff for future work. If it conflicts with older prose
 - **Flange codes:** `L4S`, `J4S`, `L2TB`, `J2TB`, `L2LR`, `J2LR`, `MIX`, `RT4S`, `RT4J`.
 - **J4S / J lip slots:** nominal F2 − hole-to-face OC to blank outer lip; outer perforation line only; ≤ 12″ c–c; J+J trim to straight lip between miters.
 - **RT4S / RT4J:** trapezoid face, RT blank outline, RT slots; **panel ID on parallel side** (not angled hypotenuse).
-- **L4S / MIX (L sides):** Leg flat for blank sizing uses **§8**: `f1 = nominal − OSS + BA`. Shop **auto** scales developed L/J from calibration ref.
+- **L4S / MIX (L sides):** Shop **auto** (default) develops legs/lips with the constant 78060 deduction (see Bend & blank math below). Theory mode (`off`): `f1 = nominal − OSS + BA` (§8).
 - **DXF `finished_face`:** CSV `width` × `height` at developed f1+f2 runouts; RT uses `_rt_nominal_face_corners` with `SHOP_FLANGE_CORNER_INSET`.
 - **DXF `bend`:** Bend 1 all active L/J; bend 2 for J with f2 > 0. J bend-1 HC ± BA/2; L bend-1 from `_f1_bend_inset_from_face` + BA/2.
 - **DXF `cut`:** `notch_size = 0`; void inner HC uses **CI** (not BD on perimeter).
@@ -37,19 +37,28 @@ This file is the short handoff for future work. If it conflicts with older prose
 
 ## Bend & blank math (summary)
 
+**Shop rule (default `shop_flat_mode=auto`, calibrated 2026-08-23 vs job 78060 / WT-1.01):**
+deduction **BD_shop = 0.335″ per 90° bend at 3/16″**, constant across alloys (5052 and 3003
+artwork share cut lines), scaling 1:1 with thickness. Face keeps full nominal.
+
 | Item | J | L |
 |------|---|---|
-| Leg flat `f1` (blank sizing) | `nominal − 3×BD/2` | `nominal − OSS + BA` |
-| Lip flat `f2` | `nominal − BD/2` | — |
+| Leg flat `f1` (blank sizing) | `nominal − 1.5×BD_shop` | `nominal − BD_shop` |
+| Lip flat `f2` | `nominal − 0.5×BD_shop` | — |
 
-See `KnownTruths` §1–§3 for Fusion cross-checks.
+Anchors: 2″ L → 1.665″ flat (1.860″ from hard inside corner incl. 0.195″ datum);
+J 2″/1.75″ → 1.4975″ + 1.5825″ = 3.080″ (3.275″ from hard corner; 78060 measured 3.267″).
+Solving 0.335 = 2(r+t) − BA confirms r = 1/8″ — the bend table radius.
+`shop_flat_mode=off` = pure theory (`nominal − 3×BD/2` / `nominal − OSS + BA` / `nominal − BD/2`).
+
+See `KnownTruths` §1–§3 for Fusion cross-checks (theory mode).
 
 ---
 
 ## Streamlit (web)
 
 - Deploy from **`main`**; entry `streamlit_app.py`; page title **Screenwall Makr Beta**.
-- Confirm deploy: caption shows **`Release: Beta v0.1.0 · …`** and **`DXF engine:`** `GENERATOR_ARTWORK_TAG` (currently `shop-corner-fold-gap-1to1`).
+- Confirm deploy: caption shows **`Release: Beta v0.1.0 · …`** and **`DXF engine:`** `GENERATOR_ARTWORK_TAG` (currently `shop-78060-flat-calibration`).
 - Reboot app on [share.streamlit.io](https://share.streamlit.io/) after push if the version string is stale.
 
 ---

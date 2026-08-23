@@ -8,6 +8,10 @@ normalized geometry with the corner fold clearance DISABLED
 all specs are byte-identical to that generator except G-RT4J, whose outline
 was re-captured after the RT-bottom br/tr arrival fix (the pre-fix outline
 drew a stray diagonal through those corner voids).
+
+Re-captured 2026-08-23 after the job-78060 shop flat recalibration
+(deduction = 0.335"/bend at 3/16", constant across alloys, 1:1 with gauge):
+blank extras and therefore all geometry shifted for every spec.
 """
 import dataclasses
 import json
